@@ -15,6 +15,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_tools terraform aws
 require_aws_auth
 
+# The shared alert topic lives in this layer, so the address is needed here
+# rather than per environment.
+ensure_alert_email
+
 ACCOUNT_ID="$(aws_account_id)"
 BUCKET="$(state_bucket_name)"
 
@@ -63,6 +67,7 @@ fi
 
 PLAN_ROLE="$(terraform output -raw gha_plan_role_arn)"
 APPLY_ROLE="$(terraform output -raw gha_apply_role_arn)"
+ALERTS_TOPIC="$(terraform output -raw alerts_topic_arn)"
 
 head1 "Bootstrap complete"
 cat <<SUMMARY
@@ -70,17 +75,35 @@ cat <<SUMMARY
   State bucket   ${BUCKET}
   Plan role      ${PLAN_ROLE}
   Apply role     ${APPLY_ROLE}
+  Alert topic    ${ALERTS_TOPIC}
 
 Next steps:
 
-  1. Add these as GitHub Actions *repository variables* (Settings ->
+  1. Confirm the alert subscription. AWS has emailed
+     ${TF_VAR_alert_email} a confirmation link, and alarms deliver
+     nothing until it is clicked.
+
+     This is a one-time step. The topic lives in this layer precisely so it
+     survives every environment teardown -- an alert channel that needed
+     re-confirming on each bring-up would end up ignored.
+
+     Check it with:
+
+       aws sns list-subscriptions-by-topic \\
+         --topic-arn ${ALERTS_TOPIC} \\
+         --query 'Subscriptions[].SubscriptionArn' --output text
+
+     A subscription ARN means confirmed. The literal word
+     "PendingConfirmation" means the link has not been clicked yet.
+
+  2. Add these as GitHub Actions *repository variables* (Settings ->
      Secrets and variables -> Actions -> Variables). They are role ARNs, not
      credentials, so variables are the right home -- there is no secret here.
 
        AWS_PLAN_ROLE_ARN   = ${PLAN_ROLE}
        AWS_APPLY_ROLE_ARN  = ${APPLY_ROLE}
 
-  2. Bring the dev environment up:
+  3. Bring the dev environment up:
 
        scripts/up.sh dev
 

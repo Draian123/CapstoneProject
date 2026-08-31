@@ -169,14 +169,7 @@ jobs:
 
       - name: terraform plan
         id: plan
-        env:
-          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
         run: |
-          if [ -z "$TF_VAR_alert_email" ]; then
-            echo "::error::The ALERT_EMAIL repository secret is not set. See RUNBOOK.md."
-            exit 1
-          fi
-
           set +e
           terraform -chdir=terraform/environments/${{ matrix.environment }} plan \
             -input=false -lock-timeout=5m -no-color \

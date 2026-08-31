@@ -1,22 +1,23 @@
 # ---------------------------------------------------------------------------
 # Monitoring module
 #
-# Observability and the cost guardrail:
+# Alarms and the dashboard for one environment.
 #
-#   * One SNS topic, subscribed by email, as the single notification channel.
-#   * Four alarms, each tied to a documented operator action in RUNBOOK.md.
-#   * One dashboard laid out so the top row answers "is the service healthy"
-#     and the rows below answer "why".
-#   * A monthly budget alert, so runaway spend is noticed by email rather than
-#     by the credit card statement.
+# The SNS topic and the budget deliberately do NOT live here -- they are in the
+# bootstrap layer, because this platform is torn down between working sessions
+# and both need to outlive it. An email subscription recreated on every
+# bring-up would need re-confirming every time, and a budget destroyed with the
+# environment cannot warn about resources a failed teardown left behind.
+#
+# This module therefore publishes into a channel it does not own, which is the
+# right shape: the environment is ephemeral, the way you get told about it is
+# not.
 #
 # The dashboard body lives in monitoring/dashboards/ rather than inline here,
-# so the repository folder the brief asks for is the actual source of truth
-# instead of a copy that drifts.
+# so that folder is the actual source of truth rather than a copy that drifts.
 # ---------------------------------------------------------------------------
 
 data "aws_region" "current" {}
-data "aws_caller_identity" "current" {}
 
 locals {
   dashboard_name = "${var.name_prefix}-overview"
@@ -30,112 +31,20 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
-# Notification channel
-# ---------------------------------------------------------------------------
-
-# Deliberately not encrypted, and the reason is worth stating: enabling SSE
-# with the AWS-managed key (alias/aws/sns) would silently break alarm
-# delivery, because the CloudWatch service principal cannot use an
-# AWS-managed key. Every notification would fail to publish while the scanner
-# reported green. Doing it properly needs a customer managed key with a key
-# policy for cloudwatch.amazonaws.com and budgets.amazonaws.com, at about
-# USD 1/month, to protect alarm state transitions that carry no sensitive
-# data. A silent outage in the alerting path is the worse trade.
-resource "aws_sns_topic" "alerts" {
-  #checkov:skip=CKV_AWS_26:SSE with the AWS-managed key would silently break alarm delivery; see SECURITY.md
-  name         = "${var.name_prefix}-alerts"
-  display_name = "${var.name_prefix} alerts"
-
-  tags = {
-    Name = "${var.name_prefix}-alerts"
-    Tier = "monitoring"
-  }
-}
-
-# Only CloudWatch may publish here, and only alarms belonging to this account.
-# Without this the topic policy defaults to account-root-only, which is fine,
-# but being explicit documents the intended publisher.
-data "aws_iam_policy_document" "alerts_topic" {
-  statement {
-    sid     = "AllowCloudWatchAlarmsToPublish"
-    effect  = "Allow"
-    actions = ["SNS:Publish"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["cloudwatch.amazonaws.com"]
-    }
-
-    resources = [aws_sns_topic.alerts.arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "AWS:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
-    }
-  }
-
-  statement {
-    sid     = "AllowBudgetsToPublish"
-    effect  = "Allow"
-    actions = ["SNS:Publish"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["budgets.amazonaws.com"]
-    }
-
-    resources = [aws_sns_topic.alerts.arn]
-  }
-
-  statement {
-    sid    = "AllowAccountOwnerFullControl"
-    effect = "Allow"
-
-    actions = [
-      "SNS:Subscribe",
-      "SNS:SetTopicAttributes",
-      "SNS:GetTopicAttributes",
-      "SNS:ListSubscriptionsByTopic",
-      "SNS:DeleteTopic",
-      "SNS:Publish",
-    ]
-
-    principals {
-      type        = "AWS"
-      identifiers = [data.aws_caller_identity.current.account_id]
-    }
-
-    resources = [aws_sns_topic.alerts.arn]
-  }
-}
-
-resource "aws_sns_topic_policy" "alerts" {
-  arn    = aws_sns_topic.alerts.arn
-  policy = data.aws_iam_policy_document.alerts_topic.json
-}
-
-# The address is supplied at apply time, never committed, because this
-# repository is public. See scripts/lib.sh:ensure_alert_email.
-#
-# AWS sends a confirmation email; the subscription stays "pending" until the
-# link is clicked. Terraform reports success either way, so a first-time
-# apply needs that one manual confirmation before alerts actually deliver.
-resource "aws_sns_topic_subscription" "alerts_email" {
-  topic_arn = aws_sns_topic.alerts.arn
-  protocol  = "email"
-  endpoint  = var.alert_email
-}
-
-# ---------------------------------------------------------------------------
 # Alarms
 #
-# Thresholds are chosen so each alarm means something different. Overlapping
-# alarms that all fire together train an operator to ignore the channel.
+# Four alarms, each detecting something the others do not. That is the design
+# constraint: alarms that all fire together during the same incident teach an
+# operator to ignore the channel.
+#
+# Every one sets treat_missing_data = "notBreaching", because a torn-down
+# environment produces no datapoints and must not look like a failure.
+#
+# Full reasoning for each threshold is in monitoring/alerts/README.md.
 # ---------------------------------------------------------------------------
 
-# 1. User-visible failure. The load balancer could not get a valid response
-#    from any target -- the strongest single signal that the site is broken.
+# 1. User-visible failure. The load balancer could not get a valid response from
+#    any healthy target -- the strongest single signal that the site is broken.
 resource "aws_cloudwatch_metric_alarm" "elb_5xx" {
   alarm_name        = "${var.name_prefix}-elb-5xx"
   alarm_description = "Load balancer returned 5xx responses it generated itself, meaning no healthy target could serve the request. Runbook: RUNBOOK.md, 'Storefront returning 5xx'."
@@ -154,12 +63,10 @@ resource "aws_cloudwatch_metric_alarm" "elb_5xx" {
   evaluation_periods  = 2
   datapoints_to_alarm = 2
 
-  # No requests at all produces no datapoints. Treating that as OK avoids a
-  # false alarm every time the environment is torn down.
   treat_missing_data = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
+  alarm_actions = [var.alerts_topic_arn]
+  ok_actions    = [var.alerts_topic_arn]
 
   tags = {
     Name     = "${var.name_prefix}-elb-5xx"
@@ -167,11 +74,16 @@ resource "aws_cloudwatch_metric_alarm" "elb_5xx" {
   }
 }
 
-# 2. Capacity erosion. Fires before users notice, while the remaining
-#    instances are still absorbing the traffic.
+# 2. Capacity erosion. Fires while the remaining instances are still absorbing
+#    the traffic, which is before users notice.
+#
+#    Because the Auto Scaling group replaces unhealthy instances by itself, this
+#    alarm does not really mean "an instance failed" -- it means an instance
+#    failed and the automation has not fixed it. Three minutes is roughly how
+#    long a replacement takes.
 resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
   alarm_name        = "${var.name_prefix}-unhealthy-hosts"
-  alarm_description = "At least one application instance is failing its health check. The ASG should replace it automatically; alarm if it does not clear. Runbook: RUNBOOK.md, 'Instance failing health checks'."
+  alarm_description = "An application instance is failing its health check and has not been replaced. Runbook: RUNBOOK.md, 'Instance failing health checks'."
 
   namespace   = "AWS/ApplicationELB"
   metric_name = "UnHealthyHostCount"
@@ -190,8 +102,8 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
 
   treat_missing_data = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
+  alarm_actions = [var.alerts_topic_arn]
+  ok_actions    = [var.alerts_topic_arn]
 
   tags = {
     Name     = "${var.name_prefix}-unhealthy-hosts"
@@ -199,11 +111,14 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
   }
 }
 
-# 3. Saturation. Set above the target-tracking setpoint so it only fires when
-#    scaling is failing to keep up, not every time the policy is working.
+# 3. Saturation. The threshold sits deliberately ABOVE the target-tracking
+#    setpoint: the scaling policy is supposed to hold the fleet near its
+#    setpoint, so sustained CPU well above it means scaling is not keeping up or
+#    the group has hit max_size. An alarm at the setpoint would fire every time
+#    the system worked correctly.
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name        = "${var.name_prefix}-cpu-high"
-  alarm_description = "Fleet CPU is sustained above the scaling setpoint, which means auto scaling is not keeping up or has hit max_size. Runbook: RUNBOOK.md, 'Sustained high CPU'."
+  alarm_description = "Fleet CPU is sustained above the scaling setpoint, so auto scaling is not keeping up or has hit its ceiling. Runbook: RUNBOOK.md, 'Sustained high CPU'."
 
   namespace   = "AWS/EC2"
   metric_name = "CPUUtilization"
@@ -221,8 +136,8 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
 
   treat_missing_data = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
+  alarm_actions = [var.alerts_topic_arn]
+  ok_actions    = [var.alerts_topic_arn]
 
   tags = {
     Name     = "${var.name_prefix}-cpu-high"
@@ -231,7 +146,11 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
 }
 
 # 4. Degradation short of failure. Catches the slow-then-broken pattern that
-#    error-rate alarms miss entirely.
+#    error-rate alarms miss entirely, and is usually the first alarm to fire in
+#    a gradual incident.
+#
+#    p95 rather than average: a fleet where one instance in ten is timing out
+#    has a barely-moved average and a p95 through the roof.
 resource "aws_cloudwatch_metric_alarm" "latency_p95" {
   alarm_name        = "${var.name_prefix}-latency-p95"
   alarm_description = "95th percentile response time exceeded its budget. The service is degraded but still answering. Runbook: RUNBOOK.md, 'Elevated latency'."
@@ -252,8 +171,8 @@ resource "aws_cloudwatch_metric_alarm" "latency_p95" {
 
   treat_missing_data = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
+  alarm_actions = [var.alerts_topic_arn]
+  ok_actions    = [var.alerts_topic_arn]
 
   tags = {
     Name     = "${var.name_prefix}-latency-p95"
@@ -263,75 +182,32 @@ resource "aws_cloudwatch_metric_alarm" "latency_p95" {
 
 # ---------------------------------------------------------------------------
 # Dashboard
+#
+# Laid out so the top row answers "is the service healthy for users" and the
+# rows below answer "why". Alarm thresholds are drawn on the relevant widgets as
+# annotations, so a reader can see how close to the edge the system is running
+# without opening the alarm definitions.
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_dashboard" "overview" {
   dashboard_name = local.dashboard_name
 
   dashboard_body = templatefile(var.dashboard_template_path, {
-    name_prefix               = var.name_prefix
-    region                    = data.aws_region.current.region
-    alb_url                   = var.alb_url
-    alb_arn_suffix            = var.alb_arn_suffix
-    target_group_arn_suffix   = var.target_group_arn_suffix
-    asg_name                  = var.autoscaling_group_name
-    app_log_group             = var.app_log_group_name
-    products_table_name       = var.products_table_name
-    metrics_namespace         = var.metrics_namespace
+    name_prefix             = var.name_prefix
+    region                  = data.aws_region.current.region
+    alb_url                 = var.alb_url
+    alb_arn_suffix          = var.alb_arn_suffix
+    target_group_arn_suffix = var.target_group_arn_suffix
+    asg_name                = var.autoscaling_group_name
+    app_log_group           = var.app_log_group_name
+    products_table_name     = var.products_table_name
+    metrics_namespace       = var.metrics_namespace
+
+    # Passed through so the dashboard annotations and the alarm thresholds
+    # cannot drift apart -- both read the same variables.
     min_size                  = var.min_size
     cpu_target_utilization    = var.cpu_target_utilization
     cpu_alarm_threshold       = var.cpu_alarm_threshold
     latency_threshold_seconds = var.latency_p95_threshold_seconds
   })
-}
-
-# ---------------------------------------------------------------------------
-# Budget guardrail
-#
-# The environment is torn down between working sessions, so the expected
-# monthly spend is low. The point of this alert is to catch the case where a
-# teardown silently failed and something has been billing for days.
-# ---------------------------------------------------------------------------
-
-resource "aws_budgets_budget" "monthly" {
-  count = var.enable_budget_alert ? 1 : 0
-
-  name         = "${var.name_prefix}-monthly"
-  budget_type  = "COST"
-  limit_amount = tostring(var.monthly_budget_usd)
-  limit_unit   = "USD"
-  time_unit    = "MONTHLY"
-
-  # Scoped by cost allocation tag, so this budget tracks only this project and
-  # not anything else in the account.
-  # AWS Budgets expects tag filters in the literal form "user:<Key>$<Value>".
-  # Built with format() so the "$" stays a delimiter rather than being read as
-  # the start of a Terraform interpolation.
-  cost_filter {
-    name   = "TagKeyValue"
-    values = [format("user:Project$%s", var.project_tag)]
-  }
-
-  # Actual spend crossing most of the budget.
-  notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 80
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_sns_topic_arns  = [aws_sns_topic.alerts.arn]
-    subscriber_email_addresses = [var.alert_email]
-  }
-
-  # Forecast crossing the whole budget. This is the one that catches a
-  # forgotten NAT Gateway on day two rather than day twenty.
-  notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 100
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "FORECASTED"
-    subscriber_sns_topic_arns  = [aws_sns_topic.alerts.arn]
-    subscriber_email_addresses = [var.alert_email]
-  }
-
-  depends_on = [aws_sns_topic_policy.alerts]
 }

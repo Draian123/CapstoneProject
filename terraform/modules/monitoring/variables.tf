@@ -3,24 +3,19 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "project_tag" {
-  description = "Value of the Project cost allocation tag, used to scope the budget to this workload."
-  type        = string
-}
-
-variable "alert_email" {
+variable "alerts_topic_arn" {
   description = <<-EOT
-    Address subscribed to the alert topic.
+    SNS topic every alarm publishes to.
 
-    Supplied at apply time via TF_VAR_alert_email rather than committed, because
-    this repository is public. AWS sends a confirmation email that must be
-    clicked once before notifications deliver.
+    Created in the bootstrap layer rather than by this module, so the email
+    subscription survives an environment teardown and does not need
+    re-confirming on every bring-up. See terraform/bootstrap/alerts.tf.
   EOT
   type        = string
 
   validation {
-    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$", var.alert_email))
-    error_message = "alert_email must be a valid email address."
+    condition     = can(regex("^arn:aws:sns:", var.alerts_topic_arn))
+    error_message = "alerts_topic_arn must be an SNS topic ARN."
   }
 }
 
@@ -97,23 +92,4 @@ variable "min_size" {
   description = "Minimum instance count, drawn on the target health widget for context."
   type        = number
   default     = 3
-}
-
-# --- Budget -----------------------------------------------------------------
-
-variable "enable_budget_alert" {
-  description = "Create the monthly cost budget and its notifications."
-  type        = bool
-  default     = true
-}
-
-variable "monthly_budget_usd" {
-  description = "Monthly spend ceiling for this project, in USD. Notifications fire at 80% actual and 100% forecast."
-  type        = number
-  default     = 40
-
-  validation {
-    condition     = var.monthly_budget_usd > 0
-    error_message = "monthly_budget_usd must be greater than zero."
-  }
 }

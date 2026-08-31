@@ -52,5 +52,6 @@ cpu_alarm_threshold           = 70
 latency_p95_threshold_seconds = 0.5
 
 # Cost guardrail
-enable_budget_alert = true
-monthly_budget_usd  = 150
+# The budget lives in the bootstrap layer: it covers the whole project and
+# must survive a teardown, since a failed teardown is exactly when a cost
+# alert matters most.

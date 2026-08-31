@@ -59,7 +59,7 @@ output "flow_log_group_name" {
 }
 
 output "alerts_topic_arn" {
-  description = "SNS topic every alarm publishes to."
+  description = "Shared SNS topic every alarm publishes to, owned by the bootstrap layer."
   value       = module.monitoring.alerts_topic_arn
 }
 

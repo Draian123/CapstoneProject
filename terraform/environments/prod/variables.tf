@@ -1,6 +1,10 @@
-# Values without a default must be supplied. alert_email deliberately has no
-# default: it is personal data and this repository is public, so it is passed
-# via TF_VAR_alert_email by scripts/lib.sh at apply time.
+# Everything here has a default, so an environment can be applied with no
+# arguments. The values that differ between dev and prod live in
+# terraform.tfvars, which makes the production posture readable as a diff.
+#
+# The alert email is deliberately not here: it is personal data, this
+# repository is public, and the topic it subscribes to belongs to the bootstrap
+# layer rather than to an environment.
 
 variable "project_name" {
   description = "Project slug. Also the value of the Project cost allocation tag."
@@ -30,11 +34,6 @@ variable "cost_center" {
   description = "Cost allocation tag: which budget this workload bills to."
   type        = string
   default     = "ironhack-bootcamp"
-}
-
-variable "alert_email" {
-  description = "Address subscribed to the alert topic. Supplied at apply time, never committed."
-  type        = string
 }
 
 # --- Network ----------------------------------------------------------------
@@ -157,18 +156,4 @@ variable "latency_p95_threshold_seconds" {
   description = "95th percentile response time budget, in seconds."
   type        = number
   default     = 1.0
-}
-
-# --- Cost ---------------------------------------------------------------------
-
-variable "enable_budget_alert" {
-  description = "Create the monthly cost budget and its notifications."
-  type        = bool
-  default     = true
-}
-
-variable "monthly_budget_usd" {
-  description = "Monthly spend ceiling for this project. Notifications fire at 80% actual and 100% forecast."
-  type        = number
-  default     = 40
 }

@@ -1,6 +1,6 @@
 output "alerts_topic_arn" {
-  description = "SNS topic every alarm and budget notification publishes to."
-  value       = aws_sns_topic.alerts.arn
+  description = "SNS topic every alarm publishes to. Owned by the bootstrap layer, passed through here for convenience."
+  value       = var.alerts_topic_arn
 }
 
 output "dashboard_name" {
@@ -26,9 +26,4 @@ output "alarm_names" {
 output "alarm_count" {
   description = "Number of configured alarms. The project requires at least three."
   value       = 4
-}
-
-output "budget_name" {
-  description = "Monthly cost budget name, or null when the budget alert is disabled."
-  value       = var.enable_budget_alert ? aws_budgets_budget.monthly[0].name : null
 }

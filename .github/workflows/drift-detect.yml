@@ -92,8 +92,6 @@ jobs:
       - name: terraform plan
         if: steps.guard.outputs.deployed == 'true'
         id: plan
-        env:
-          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
         run: |
           set +e
           terraform -chdir=terraform/environments/${{ matrix.environment }} plan \

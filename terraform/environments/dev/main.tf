@@ -112,12 +112,19 @@ module "compute" {
 # Observability and cost guardrail
 # ---------------------------------------------------------------------------
 
+# The alert channel is owned by the bootstrap layer so that it outlives this
+# environment. Resolved by name rather than through terraform_remote_state,
+# which keeps the coupling to a string instead of to another layer's state
+# file -- and means this environment needs no read access to it.
+data "aws_sns_topic" "alerts" {
+  name = "${var.project_name}-alerts"
+}
+
 module "monitoring" {
   source = "../../modules/monitoring"
 
-  name_prefix = local.name_prefix
-  project_tag = var.project_name
-  alert_email = var.alert_email
+  name_prefix      = local.name_prefix
+  alerts_topic_arn = data.aws_sns_topic.alerts.arn
 
   # The dashboard body is authored under monitoring/dashboards/ so that folder
   # is the single source of truth rather than a copy of what is in state.
@@ -137,7 +144,4 @@ module "monitoring" {
   cpu_alarm_threshold           = var.cpu_alarm_threshold
   latency_p95_threshold_seconds = var.latency_p95_threshold_seconds
   min_size                      = var.min_size
-
-  enable_budget_alert = var.enable_budget_alert
-  monthly_budget_usd  = var.monthly_budget_usd
 }
