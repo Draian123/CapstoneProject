@@ -37,7 +37,11 @@ env:
 
 jobs:
   validate:
-    name: format, lint and validate
+    # No comma in this name, deliberately. Required-status-check lists are
+    # comma-separated in several GitHub UIs, so a job called "format, lint and
+    # validate" gets split into two checks that will never report, and the
+    # branch becomes permanently unmergeable with no obvious cause.
+    name: validate
     runs-on: ubuntu-latest
 
     steps:

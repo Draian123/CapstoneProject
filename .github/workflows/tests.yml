@@ -85,7 +85,9 @@ jobs:
         run: go test -run '^$' ./...
 
   infrastructure:
-    name: terratest (${{ github.event.inputs.suite || 'networking' }})
+    # Static name. Interpolating the dispatch input here rendered the raw
+    # expression on pull_request events, where inputs are null.
+    name: terratest
     runs-on: ubuntu-latest
     needs: [terratest-compiles]
 

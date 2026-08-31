@@ -73,8 +73,13 @@ AWS_APPLY_ROLE_ARN  = arn:aws:iam::697345203222:role/ce-capstone-gha-apply
 **3. Enable branch protection** on `main`. Settings → Branches → Add rule:
 
 - Require a pull request before merging
-- Require status checks to pass: `format, lint and validate`,
-  `policy unit tests`, `security scan`, `plan dev`, `plan prod`
+- Require status checks to pass. Add these five, **one entry each**:
+  `validate`, `policy unit tests`, `security scan`, `plan dev`, `plan prod`
+
+  > None of these contain a comma, and that is deliberate. Several GitHub UIs
+  > treat a required-check list as comma-separated, so a check name containing
+  > one is silently split into two names that never report — leaving the branch
+  > unmergeable with no visible cause.
 - Require branches to be up to date before merging
 
 **4. Activate the `Project` cost allocation tag.** Billing → Cost allocation
