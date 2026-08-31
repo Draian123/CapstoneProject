@@ -7,6 +7,7 @@
 
 aws_region  = "us-east-1"
 environment = "dev"
+owner       = ""
 
 # Network
 vpc_cidr           = "10.20.0.0/16"
@@ -22,7 +23,7 @@ desired_capacity       = 3
 cpu_target_utilization = 50
 
 # Data tier
-enable_point_in_time_recovery = false
+enable_point_in_time_recovery = true
 enable_backup_plan            = true
 backup_retention_days         = 7
 enable_deletion_protection    = false
