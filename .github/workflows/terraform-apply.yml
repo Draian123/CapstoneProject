@@ -1,0 +1,191 @@
+name: terraform apply
+
+# Deployment on merge to main.
+#
+# One behaviour here is deliberately unusual and worth reading: by default this
+# workflow will NOT bring up an environment that is currently torn down.
+#
+# This platform is destroyed between working sessions to avoid paying for a NAT
+# Gateway and three instances around the clock. If a merge resurrected the
+# environment, the cost control would be silently undone by ordinary GitOps.
+# So the rule is: apply updates a running environment, and only an explicit
+# manual dispatch may create one from nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "app/**"
+      - "monitoring/**"
+      - ".github/workflows/terraform-apply.yml"
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        type: choice
+        options: [dev, prod]
+        default: dev
+      create_if_absent:
+        description: Create the environment even if it is currently torn down (starts billing)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+# Never run two applies against the same state at once, and never cancel one
+# midway -- a cancelled apply leaves a held lock and a half-built environment.
+concurrency:
+  group: terraform-apply-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.15.8"
+  AWS_REGION: us-east-1
+  PROJECT_NAME: ce-capstone
+  TARGET_ENV: ${{ inputs.environment || 'dev' }}
+
+jobs:
+  apply:
+    name: apply ${{ inputs.environment || 'dev' }}
+    runs-on: ubuntu-latest
+
+    # Bind to a GitHub Environment so a required reviewer can be configured in
+    # repository settings without touching this file.
+    environment: ${{ inputs.environment || 'dev' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      # The apply role's trust policy accepts only tokens whose subject is
+      # refs/heads/main, so this cannot be reached from a pull request.
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - name: resolve state backend
+        id: backend
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          echo "bucket=${PROJECT_NAME}-tfstate-${account_id}" >> "$GITHUB_OUTPUT"
+
+      - name: terraform init
+        run: |
+          terraform -chdir=terraform/environments/${TARGET_ENV} init \
+            -input=false \
+            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="key=${PROJECT_NAME}/${TARGET_ENV}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      # The cost guard described at the top of this file.
+      - name: check whether the environment is running
+        id: guard
+        run: |
+          count=$(terraform -chdir=terraform/environments/${TARGET_ENV} state list 2>/dev/null | grep -c . || true)
+          echo "resource_count=${count}" >> "$GITHUB_OUTPUT"
+
+          if [ "$count" -gt 0 ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Environment is up (${count} resources): applying changes."
+            exit 0
+          fi
+
+          if [ "${{ inputs.create_if_absent }}" = "true" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Environment is down, but create_if_absent was requested: creating."
+            exit 0
+          fi
+
+          echo "proceed=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Apply skipped — \`${TARGET_ENV}\` is torn down"
+            echo
+            echo "The environment holds no resources, so nothing is billing and there"
+            echo "is nothing to update. This is the normal state between working"
+            echo "sessions."
+            echo
+            echo "To deploy it anyway, re-run this workflow manually with"
+            echo "**create_if_absent** enabled, or run \`scripts/up.sh ${TARGET_ENV}\` locally."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform plan
+        if: steps.guard.outputs.proceed == 'true'
+        env:
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          if [ -z "$TF_VAR_alert_email" ]; then
+            echo "::error::The ALERT_EMAIL repository secret is not set. See RUNBOOK.md."
+            exit 1
+          fi
+
+          terraform -chdir=terraform/environments/${TARGET_ENV} plan \
+            -input=false -lock-timeout=5m -no-color -out=tfplan
+
+          terraform -chdir=terraform/environments/${TARGET_ENV} show -json tfplan > tfplan.json
+
+      # The same gate the pull request had to pass. Re-run here because main
+      # may have moved on since the PR was planned, and because a plan that was
+      # never gated must never reach apply.
+      - name: policy gate
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          violations=$(opa eval --format raw --data terraform/policy/ \
+            --input terraform/environments/${TARGET_ENV}/tfplan.json 'data.main.deny')
+
+          if [ "$(echo "$violations" | jq 'length')" -gt 0 ]; then
+            echo "::error::Policy violations block this apply"
+            echo "$violations" | jq -r '.[] | "  - " + .'
+            exit 1
+          fi
+
+          echo "Policy gate passed."
+
+      # Applies the saved plan, not a fresh one. What was reviewed and gated is
+      # exactly what is executed.
+      - name: terraform apply
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          terraform -chdir=terraform/environments/${TARGET_ENV} apply \
+            -input=false -lock-timeout=5m -no-color tfplan
+
+      - name: verify the storefront is serving
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          url=$(terraform -chdir=terraform/environments/${TARGET_ENV} output -raw storefront_url)
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 5 "${url}/health" > health.json 2>/dev/null; then
+              echo "Storefront healthy at ${url}"
+              cat health.json
+              {
+                echo "### Deployed \`${TARGET_ENV}\`"
+                echo
+                echo "Storefront: ${url}"
+                echo
+                echo '```json'
+                cat health.json
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "waiting for the endpoint (${attempt}/20)"
+            sleep 15
+          done
+
+          echo "::error::Deployment finished but ${url}/health never answered."
+          exit 1

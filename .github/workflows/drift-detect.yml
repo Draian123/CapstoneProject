@@ -1,0 +1,210 @@
+name: drift detection
+
+# Detects infrastructure that no longer matches the code.
+#
+# Drift is what happens after someone fixes something in the console during an
+# incident and never brings it back to Terraform. The next apply then silently
+# reverts the fix, or fails. This job runs a read-only plan on a schedule and
+# opens an issue when reality and code disagree.
+#
+# It is careful about one thing in particular: this platform is deliberately
+# torn down between working sessions. An empty environment is the expected
+# state, not drift, so the job checks for that first and exits quietly. Without
+# that check it would file a false issue every single night.
+
+on:
+  schedule:
+    # 06:00 UTC daily, before a working session rather than during one.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: drift-detection
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.15.8"
+  AWS_REGION: us-east-1
+  PROJECT_NAME: ce-capstone
+
+jobs:
+  detect:
+    name: detect drift in ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # The read-only role. Drift detection must never be able to change
+      # anything, so it deliberately cannot assume the apply role.
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-drift-${{ github.run_id }}
+
+      - name: resolve state backend
+        id: backend
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          echo "bucket=${PROJECT_NAME}-tfstate-${account_id}" >> "$GITHUB_OUTPUT"
+
+      - name: terraform init
+        run: |
+          terraform -chdir=terraform/environments/${{ matrix.environment }} init \
+            -input=false \
+            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="key=${PROJECT_NAME}/${{ matrix.environment }}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      # A torn-down environment is the normal resting state of this platform,
+      # not a finding.
+      - name: skip if the environment is torn down
+        id: guard
+        run: |
+          count=$(terraform -chdir=terraform/environments/${{ matrix.environment }} state list 2>/dev/null | grep -c . || true)
+          echo "resource_count=${count}" >> "$GITHUB_OUTPUT"
+
+          if [ "$count" -eq 0 ]; then
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.environment }} holds no resources -- nothing deployed, nothing to drift."
+          else
+            echo "deployed=true" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.environment }} has ${count} resources; checking for drift."
+          fi
+
+      - name: terraform plan
+        if: steps.guard.outputs.deployed == 'true'
+        id: plan
+        env:
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          set +e
+          terraform -chdir=terraform/environments/${{ matrix.environment }} plan \
+            -input=false -lock-timeout=5m -no-color -detailed-exitcode \
+            > drift.txt 2>&1
+          code=$?
+          set -e
+
+          case $code in
+            0) echo "drift=false" >> "$GITHUB_OUTPUT"; echo "No drift." ;;
+            2) echo "drift=true"  >> "$GITHUB_OUTPUT"; echo "Drift detected."; cat drift.txt ;;
+            *) cat drift.txt; echo "::error::plan failed"; exit 1 ;;
+          esac
+
+          # Keep the issue body inside GitHub's 65536-character limit.
+          tail -c 40000 drift.txt > drift_trimmed.txt
+
+      - name: open or update a drift issue
+        if: steps.plan.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        with:
+          script: |
+            const fs = require('fs');
+            const env = process.env.ENVIRONMENT;
+            const drift = fs.readFileSync(
+              `terraform/environments/${env}/drift_trimmed.txt`, 'utf8');
+
+            const title = `Infrastructure drift detected in ${env}`;
+            const marker = `<!-- drift:${env} -->`;
+
+            const body = [
+              marker,
+              `Deployed infrastructure in \`${env}\` no longer matches the code on \`main\`.`,
+              '',
+              'Something was most likely changed outside Terraform. Either bring the',
+              'change into code, or run an apply to restore the declared state.',
+              '',
+              `Detected by [run ${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              '',
+              '<details><summary>Plan output</summary>',
+              '',
+              '```terraform',
+              drift,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            // Reuse the open issue for this environment instead of filing a new
+            // one every morning until someone notices.
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+
+            const existing = issues.find(i => i.body && i.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.notice(`Updated drift issue #${existing.number} for ${env}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['drift', 'infrastructure'],
+              });
+              core.notice(`Opened drift issue #${created.number} for ${env}`);
+            }
+
+      # Closing the issue automatically matters as much as opening it. An issue
+      # tracker full of stale alerts is one nobody reads.
+      - name: close a resolved drift issue
+        if: steps.guard.outputs.deployed == 'true' && steps.plan.outputs.drift == 'false'
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        with:
+          script: |
+            const env = process.env.ENVIRONMENT;
+            const marker = `<!-- drift:${env} -->`;
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+
+            for (const issue of issues.filter(i => i.body && i.body.includes(marker))) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Drift resolved — \`${env}\` matches the code again as of run ${context.runId}.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              core.notice(`Closed drift issue #${issue.number} for ${env}`);
+            }

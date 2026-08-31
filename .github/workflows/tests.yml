@@ -1,0 +1,163 @@
+name: tests
+
+# Two tiers of testing, separated by what they cost.
+#
+# The fast tier runs on every pull request: it compiles the Terratest suite and
+# exercises the application, and it creates nothing in AWS.
+#
+# The infrastructure tier really does build a VPC, a load balancer and three
+# instances, so it runs only when explicitly asked for -- by adding the
+# `run-terratest` label to a pull request, or by manual dispatch. Running it on
+# every push would spend money on every typo fix.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "tests/**"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which infrastructure test to run
+        type: choice
+        options: [networking, platform, all]
+        default: networking
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.22"
+  TF_VERSION: "1.15.8"
+  AWS_REGION: us-east-1
+
+jobs:
+  app:
+    name: application
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The application has no dependencies by design, so there is nothing to
+      # install and a syntax error is the only build-time failure available.
+      - name: syntax check
+        run: node --check app/src/server.js
+
+      - name: unit tests
+        run: node --test app/test/*.test.js
+
+  terratest-compiles:
+    name: terratest compiles
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      # `go vet` catches the mistakes that would otherwise only surface fifteen
+      # minutes into a run that has already built a NAT Gateway.
+      - name: vet
+        working-directory: tests/terratest
+        run: |
+          go mod tidy
+          go vet ./...
+
+      - name: compile tests without running them
+        working-directory: tests/terratest
+        run: go test -run '^$' ./...
+
+  infrastructure:
+    name: terratest (${{ github.event.inputs.suite || 'networking' }})
+    runs-on: ubuntu-latest
+    needs: [terratest-compiles]
+
+    # Real AWS resources. Gated behind an explicit signal.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-terratest'))
+
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # Terratest creates and destroys real infrastructure, so it needs the
+      # apply role rather than the read-only plan role.
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-terratest-${{ github.run_id }}
+
+      - name: run
+        working-directory: tests/terratest
+        env:
+          SUITE: ${{ github.event.inputs.suite || 'networking' }}
+        run: |
+          case "$SUITE" in
+            networking) pattern='TestNetworkingModule' ;;
+            platform)   pattern='TestPlatformEndToEnd' ;;
+            all)        pattern='Test' ;;
+            *)          echo "::error::unknown suite $SUITE"; exit 1 ;;
+          esac
+
+          go mod tidy
+          go test -v -timeout 40m -run "$pattern" ./...
+
+      # Terratest destroys what it created in a deferred call, but a hard
+      # failure or a cancelled run can leave resources behind. They cost money
+      # for as long as they exist, so say so loudly rather than leaving it to
+      # be discovered on the bill.
+      - name: report leaked resources
+        if: always()
+        run: |
+          leaked=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Owner,Values=terratest" \
+            --query 'Vpcs[].VpcId' --output text)
+
+          if [ -n "$leaked" ]; then
+            echo "::warning::Terratest VPCs still present: ${leaked}"
+            {
+              echo "### Leaked test resources"
+              echo
+              echo "These VPCs are tagged \`Owner=terratest\` and were not destroyed:"
+              echo
+              echo '```'
+              echo "$leaked"
+              echo '```'
+              echo
+              echo "Remove them before they accumulate NAT Gateway charges."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No leaked test resources."
+          fi

@@ -1,0 +1,17 @@
+{
+  "name": "ce-capstone-storefront",
+  "version": "1.0.0",
+  "description": "Minimal storefront that makes the infrastructure observable: which instance and availability zone served each request, plus a DynamoDB-backed catalog.",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "comment": "No dependencies, and that is a design decision rather than an accident. Every package would be one more thing to download through the NAT Gateway while an instance boots, and one more way for an instance to join the target group unhealthy. DynamoDB is read through the AWS CLI, which Amazon Linux 2023 ships with and which picks up the instance role automatically.",
+  "license": "MIT"
+}
