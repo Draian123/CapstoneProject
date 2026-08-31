@@ -1,0 +1,56 @@
+graph TB
+    internet([Internet<br/>0.0.0.0/0])
+
+    subgraph vpc["VPC · ce-capstone-dev-vpc · 10.20.0.0/16"]
+        igw[Internet Gateway]
+
+        subgraph az_a["Availability Zone us-east-1a"]
+            pub_a["Public subnet<br/>10.20.0.0/24"]
+            priv_a["Private subnet<br/>10.20.10.0/24"]
+            nat["NAT Gateway<br/>+ Elastic IP"]
+        end
+
+        subgraph az_b["Availability Zone us-east-1b"]
+            pub_b["Public subnet<br/>10.20.1.0/24"]
+            priv_b["Private subnet<br/>10.20.11.0/24"]
+        end
+
+        rt_pub["Public route table<br/>0.0.0.0/0 → IGW"]
+        rt_priv_a["Private route table a<br/>0.0.0.0/0 → NAT<br/>pl-dynamodb → endpoint"]
+        rt_priv_b["Private route table b<br/>0.0.0.0/0 → NAT<br/>pl-dynamodb → endpoint"]
+
+        vpce[["DynamoDB gateway endpoint"]]
+    end
+
+    internet <--> igw
+    igw --- rt_pub
+    rt_pub --- pub_a
+    rt_pub --- pub_b
+
+    pub_a --- nat
+    nat --- rt_priv_a
+    nat --- rt_priv_b
+    rt_priv_a --- priv_a
+    rt_priv_b --- priv_b
+
+    rt_priv_a --- vpce
+    rt_priv_b --- vpce
+
+    subgraph sg["Security groups — chained, not flat"]
+        direction LR
+        sg_alb["alb-sg<br/><br/>in : tcp/80 ← 0.0.0.0/0<br/>out: tcp/3000 → app-sg"]
+        sg_app["app-sg<br/><br/>in : tcp/3000 ← alb-sg<br/>out: tcp/443 → 0.0.0.0/0"]
+        sg_alb -->|"references the group,<br/>not a CIDR"| sg_app
+    end
+
+    note["No port 22 anywhere.<br/>No key pair, no bastion.<br/>Operator access is SSM Session Manager."]
+
+    classDef public fill:#1f4e79,stroke:#2d6ca8,color:#fff
+    classDef privateTier fill:#2d5016,stroke:#4a7c26,color:#fff
+    classDef routing fill:#4a4a4a,stroke:#6e6e6e,color:#fff
+    classDef security fill:#7a1f1f,stroke:#b03030,color:#fff
+
+    class pub_a,pub_b,igw,nat public
+    class priv_a,priv_b privateTier
+    class rt_pub,rt_priv_a,rt_priv_b,vpce routing
+    class sg_alb,sg_app,note security

@@ -1,0 +1,37 @@
+sequenceDiagram
+    autonumber
+    actor User
+    participant ALB as Application<br/>Load Balancer
+    participant App as storefront<br/>(private subnet)
+    participant IMDS as IMDSv2
+    participant VPCE as DynamoDB<br/>gateway endpoint
+    participant DDB as DynamoDB
+    participant CW as CloudWatch
+
+    Note over App,IMDS: At boot, once
+    App->>IMDS: PUT /latest/api/token
+    IMDS-->>App: session token (IMDSv1 is disabled)
+    App->>IMDS: GET instance-id, AZ, instance-type
+    IMDS-->>App: i-0abc... · us-east-1a · t4g.micro
+
+    Note over App,DDB: Every 60s, in the background
+    App->>VPCE: dynamodb:Scan (instance role credentials)
+    VPCE->>DDB: routed over the AWS network,<br/>never via the NAT Gateway
+    DDB-->>App: 6 catalog items
+    App->>App: cache in memory
+
+    Note over User,CW: Per request
+    User->>ALB: GET /
+    ALB->>App: forward to a healthy target
+    App-->>ALB: 200 + X-Instance-Id, X-Availability-Zone
+    ALB-->>User: storefront page
+
+    Note over App,CW: The catalog is served from memory,<br/>so a request never blocks on DynamoDB
+    App->>CW: structured JSON log line
+    ALB->>CW: RequestCount, TargetResponseTime, 5xx
+
+    Note over ALB,App: Health check, every 5s per target
+    ALB->>App: GET /health
+    App-->>ALB: 200 — deliberately shallow
+
+    Note over App: /health does NOT check DynamoDB.<br/>A deep check would fail every instance at once<br/>when a shared dependency broke, turning a<br/>degraded feature into a total outage.

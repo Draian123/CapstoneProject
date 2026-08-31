@@ -1,0 +1,65 @@
+graph TB
+    user([User])
+
+    subgraph aws["AWS · us-east-1"]
+        igw[Internet Gateway]
+
+        subgraph vpc["VPC 10.20.0.0/16"]
+            subgraph public["Public subnets · 2 AZs"]
+                alb["Application Load Balancer<br/>HTTP :80 → target group :3000"]
+                nat["NAT Gateway ×1<br/>shared, outbound only"]
+            end
+
+            subgraph private["Private subnets · 2 AZs"]
+                asg["Auto Scaling Group<br/>min 3 · max 6 · t4g.micro<br/>target tracking @ 50% CPU"]
+                app1["storefront<br/>us-east-1a"]
+                app2["storefront<br/>us-east-1a"]
+                app3["storefront<br/>us-east-1b"]
+            end
+
+            vpce[["DynamoDB gateway endpoint<br/>free · traffic stays in the VPC"]]
+        end
+
+        ddb[("DynamoDB<br/>product catalog<br/>on-demand · PITR")]
+        backup["AWS Backup<br/>daily · 7-day retention"]
+
+        subgraph obs["Observability"]
+            cw["CloudWatch<br/>dashboard · 4 alarms<br/>logs · custom metrics"]
+            sns["SNS topic<br/>bootstrap layer"]
+            budget["AWS Budget<br/>80% actual · 100% forecast"]
+        end
+    end
+
+    email([Email])
+
+    user -->|HTTP| igw
+    igw --> alb
+    alb -->|"only source allowed<br/>by the app security group"| asg
+    asg --- app1
+    asg --- app2
+    asg --- app3
+
+    app1 --> vpce
+    app2 --> vpce
+    app3 --> vpce
+    vpce --> ddb
+
+    app1 -.->|"yum · CloudWatch agent"| nat
+    nat -.-> igw
+
+    ddb -.-> backup
+    app1 -.->|logs + metrics| cw
+    alb -.->|metrics| cw
+    cw -->|alarm state change| sns
+    budget --> sns
+    sns --> email
+
+    classDef edge fill:#1f4e79,stroke:#2d6ca8,color:#fff
+    classDef compute fill:#2d5016,stroke:#4a7c26,color:#fff
+    classDef data fill:#5c2d5c,stroke:#8a468a,color:#fff
+    classDef observability fill:#7a4a00,stroke:#b06f00,color:#fff
+
+    class alb,nat,igw edge
+    class asg,app1,app2,app3 compute
+    class ddb,vpce,backup data
+    class cw,sns,budget observability

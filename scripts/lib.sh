@@ -12,7 +12,7 @@ ENVIRONMENTS_DIR="${REPO_ROOT}/terraform/environments"
 
 # Hourly cost of the billable resources in one environment, used by status.sh
 # and up.sh to keep the running cost visible. Kept in sync with COSTS.md.
-HOURLY_BURN_USD="0.093"
+HOURLY_BURN_USD="0.096"
 
 if [[ -t 1 ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_RED=$'\033[31m'

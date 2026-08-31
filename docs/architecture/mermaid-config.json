@@ -1,0 +1,6 @@
+{
+  "theme": "dark",
+  "themeVariables": { "fontFamily": "ui-sans-serif, system-ui, sans-serif", "fontSize": "15px" },
+  "flowchart": { "curve": "basis", "nodeSpacing": 45, "rankSpacing": 55, "htmlLabels": true },
+  "sequence": { "actorFontSize": 15, "noteFontSize": 13, "messageFontSize": 14, "wrap": true, "width": 220 }
+}

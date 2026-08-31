@@ -1,0 +1,77 @@
+graph TB
+    dev([Developer])
+    branch[Feature branch]
+    pr{{Pull request}}
+
+    subgraph plan_wf["terraform-plan.yml — the gate"]
+        direction TB
+        fmt["terraform fmt<br/>tflint · validate"]
+        policy_test["opa test<br/>26 policy unit tests"]
+        checkov["checkov<br/>235 checks"]
+        tfplan["terraform plan<br/>dev + prod"]
+        gate{"OPA policy gate<br/>evaluated against the<br/>plan JSON, not the HCL"}
+        comment["Plan posted as a<br/>PR comment"]
+
+        fmt --> tfplan
+        policy_test --> tfplan
+        checkov --> tfplan
+        tfplan --> gate
+        gate -->|no violations| comment
+    end
+
+    blocked["Merge blocked"]
+    main[main branch]
+
+    subgraph apply_wf["terraform-apply.yml"]
+        direction TB
+        guard{"Is the environment<br/>currently up?"}
+        skipped["Skipped — nothing is<br/>billing, nothing to update"]
+        replan["plan → policy gate<br/>re-run against main"]
+        apply["terraform apply<br/>the saved plan"]
+        verify["curl /health<br/>until it answers"]
+
+        guard -->|no| skipped
+        guard -->|yes| replan
+        replan --> apply
+        apply --> verify
+    end
+
+    manual([Manual dispatch<br/>create_if_absent])
+    aws[("AWS")]
+
+    subgraph drift_wf["drift-detect.yml — daily 06:00 UTC"]
+        direction TB
+        d_guard{"Environment<br/>deployed?"}
+        d_quiet["Exit quietly — a torn-down<br/>environment is the normal<br/>resting state, not drift"]
+        d_plan["plan -detailed-exitcode"]
+        d_issue["Open / update / close<br/>a drift issue"]
+
+        d_guard -->|no| d_quiet
+        d_guard -->|yes| d_plan
+        d_plan --> d_issue
+    end
+
+    dev --> branch --> pr
+    pr --> fmt
+    pr --> policy_test
+    pr --> checkov
+    gate -->|violations| blocked
+    comment -->|review + approve| main
+    main --> guard
+    manual -->|overrides the guard| replan
+    apply --> aws
+    aws --> d_plan
+    d_guard -.-> aws
+
+    oidc["OIDC federation<br/><br/>plan  → read-only role<br/>apply → deploy role, main only<br/><br/>No AWS keys in GitHub"]
+    oidc -.->|short-lived credentials| aws
+
+    classDef check fill:#1f4e79,stroke:#2d6ca8,color:#fff
+    classDef deny fill:#7a1f1f,stroke:#b03030,color:#fff
+    classDef deploy fill:#2d5016,stroke:#4a7c26,color:#fff
+    classDef security fill:#7a4a00,stroke:#b06f00,color:#fff
+
+    class fmt,policy_test,checkov,tfplan,d_plan check
+    class gate,blocked,d_guard,guard deny
+    class apply,verify,comment,main deploy
+    class oidc security
