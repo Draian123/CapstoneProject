@@ -1,0 +1,177 @@
+#!/bin/bash
+#
+# Instance bootstrap, rendered by Terraform into the launch template.
+#
+# The application is embedded in this script as a gzip+base64 blob rather than
+# fetched from S3 or a container registry. That keeps the boot path free of
+# any artifact store to provision, credentials to hand out, or network
+# dependency that could leave an instance unhealthy. Changing the application
+# changes this script, which produces a new launch template version, which the
+# ASG rolls out as an instance refresh.
+#
+set -euo pipefail
+
+APP_DIR="/opt/ce-capstone"
+LOG_DIR="/var/log/ce-capstone"
+APP_USER="ceapp"
+
+exec > >(tee -a /var/log/ce-capstone-bootstrap.log) 2>&1
+echo "[bootstrap] starting at $(date -Is)"
+
+# ---------------------------------------------------------------------------
+# Packages
+#
+# Amazon Linux 2023 already ships the AWS CLI and the SSM agent. Only the
+# Node.js runtime and the CloudWatch agent are missing.
+# ---------------------------------------------------------------------------
+echo "[bootstrap] installing packages"
+dnf install -y --setopt=install_weak_deps=False nodejs amazon-cloudwatch-agent
+
+# ---------------------------------------------------------------------------
+# Application user and layout
+#
+# The service runs as an unprivileged account with no login shell. A remote
+# code execution in the storefront lands as "ceapp", not as root.
+# ---------------------------------------------------------------------------
+id -u "$APP_USER" &>/dev/null || useradd --system --no-create-home --shell /sbin/nologin "$APP_USER"
+
+mkdir -p "$APP_DIR" "$LOG_DIR"
+
+echo "[bootstrap] writing application"
+cat > "$APP_DIR/server.js.gz.b64" <<'APP_PAYLOAD_EOF'
+${app_payload_b64}
+APP_PAYLOAD_EOF
+
+base64 -d < "$APP_DIR/server.js.gz.b64" | gunzip > "$APP_DIR/server.js"
+rm -f "$APP_DIR/server.js.gz.b64"
+
+node --check "$APP_DIR/server.js"
+
+chown -R "$APP_USER:$APP_USER" "$APP_DIR" "$LOG_DIR"
+chmod 750 "$APP_DIR"
+
+# ---------------------------------------------------------------------------
+# CloudWatch agent
+#
+# Ships the application log to CloudWatch Logs and adds the memory and disk
+# metrics the EC2 hypervisor cannot see. Log stream is keyed by instance id so
+# a single instance can be isolated during an incident.
+# ---------------------------------------------------------------------------
+echo "[bootstrap] configuring cloudwatch agent"
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT_EOF'
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root"
+  },
+  "metrics": {
+    "namespace": "${metrics_namespace}",
+    "append_dimensions": {
+      "AutoScalingGroupName": "$${aws:AutoScalingGroupName}",
+      "InstanceId": "$${aws:InstanceId}"
+    },
+    "aggregation_dimensions": [["AutoScalingGroupName"], []],
+    "metrics_collected": {
+      "mem": {
+        "measurement": [{ "name": "mem_used_percent", "rename": "MemoryUtilization", "unit": "Percent" }]
+      },
+      "disk": {
+        "resources": ["/"],
+        "measurement": [{ "name": "used_percent", "rename": "DiskUtilization", "unit": "Percent" }]
+      }
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "${log_dir}/app.log",
+            "log_group_name": "${app_log_group}",
+            "log_stream_name": "{instance_id}/app",
+            "timezone": "UTC",
+            "retention_in_days": ${log_retention_days}
+          },
+          {
+            "file_path": "/var/log/ce-capstone-bootstrap.log",
+            "log_group_name": "${app_log_group}",
+            "log_stream_name": "{instance_id}/bootstrap",
+            "timezone": "UTC",
+            "retention_in_days": ${log_retention_days}
+          }
+        ]
+      }
+    }
+  }
+}
+CWAGENT_EOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+echo "[bootstrap] installing systemd unit"
+cat > /etc/systemd/system/ce-capstone.service <<UNIT_EOF
+[Unit]
+Description=ce-capstone storefront
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/bin/node $APP_DIR/server.js
+
+Environment=NODE_ENV=production
+Environment=PORT=${app_port}
+Environment=AWS_REGION=${aws_region}
+Environment=PRODUCTS_TABLE=${products_table}
+Environment=ENVIRONMENT=${environment}
+
+# Log to a file the CloudWatch agent tails, rather than to the journal, so the
+# agent needs no journald integration.
+StandardOutput=append:$LOG_DIR/app.log
+StandardError=append:$LOG_DIR/app.log
+
+Restart=always
+RestartSec=5
+
+# The service needs nothing but its own directory and outbound HTTPS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$LOG_DIR
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable --now ce-capstone.service
+
+# ---------------------------------------------------------------------------
+# Readiness gate
+#
+# Do not let the instance report success until it is actually serving. If this
+# fails the instance fails its ELB health check, the ASG replaces it, and the
+# bootstrap log above explains why.
+# ---------------------------------------------------------------------------
+echo "[bootstrap] waiting for the service to answer health checks"
+for attempt in $(seq 1 30); do
+  if curl -fsS --max-time 2 "http://127.0.0.1:${app_port}/health" >/dev/null 2>&1; then
+    echo "[bootstrap] healthy after $${attempt} attempt(s)"
+    echo "[bootstrap] complete at $(date -Is)"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "[bootstrap] FAILED: service did not become healthy within 60s"
+systemctl status ce-capstone.service --no-pager || true
+exit 1

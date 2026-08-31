@@ -1,0 +1,157 @@
+{
+  "widgets": [
+    {
+      "type": "text",
+      "x": 0, "y": 0, "width": 24, "height": 2,
+      "properties": {
+        "markdown": "# ${name_prefix} — platform overview\n**Storefront:** ${alb_url}  ·  **Runbook:** `RUNBOOK.md`  ·  **Region:** ${region}\n\nTop row answers *is the service healthy for users*. Middle row answers *why*. Bottom row is capacity and logs."
+      }
+    },
+
+    {
+      "type": "metric",
+      "x": 0, "y": 2, "width": 8, "height": 6,
+      "properties": {
+        "title": "Request rate and errors",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "${region}",
+        "period": 60,
+        "stat": "Sum",
+        "yAxis": { "left": { "min": 0, "label": "requests" } },
+        "metrics": [
+          [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${alb_arn_suffix}", { "label": "Requests", "color": "#688ae8" } ],
+          [ ".", "HTTPCode_Target_5XX_Count", ".", ".", { "label": "Target 5xx", "color": "#d13212" } ],
+          [ ".", "HTTPCode_ELB_5XX_Count", ".", ".", { "label": "ELB 5xx", "color": "#ff7f0e" } ],
+          [ ".", "HTTPCode_Target_4XX_Count", ".", ".", { "label": "Target 4xx", "color": "#e0ca57" } ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8, "y": 2, "width": 8, "height": 6,
+      "properties": {
+        "title": "Latency (p50 / p95 / p99)",
+        "view": "timeSeries",
+        "region": "${region}",
+        "period": 60,
+        "yAxis": { "left": { "min": 0, "label": "seconds" } },
+        "metrics": [
+          [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${alb_arn_suffix}", { "stat": "p50", "label": "p50" } ],
+          [ "...", { "stat": "p95", "label": "p95" } ],
+          [ "...", { "stat": "p99", "label": "p99" } ]
+        ],
+        "annotations": {
+          "horizontal": [
+            { "label": "p95 alarm threshold", "value": ${latency_threshold_seconds}, "color": "#d13212" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16, "y": 2, "width": 8, "height": 6,
+      "properties": {
+        "title": "Target health",
+        "view": "timeSeries",
+        "region": "${region}",
+        "period": 60,
+        "stat": "Average",
+        "yAxis": { "left": { "min": 0, "label": "targets" } },
+        "metrics": [
+          [ "AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", "${target_group_arn_suffix}", "LoadBalancer", "${alb_arn_suffix}", { "label": "Healthy", "color": "#2ca02c" } ],
+          [ ".", "UnHealthyHostCount", ".", ".", ".", ".", { "label": "Unhealthy", "color": "#d13212" } ]
+        ],
+        "annotations": {
+          "horizontal": [
+            { "label": "minimum capacity", "value": ${min_size}, "color": "#999999" }
+          ]
+        }
+      }
+    },
+
+    {
+      "type": "metric",
+      "x": 0, "y": 8, "width": 8, "height": 6,
+      "properties": {
+        "title": "CPU utilisation",
+        "view": "timeSeries",
+        "region": "${region}",
+        "period": 60,
+        "yAxis": { "left": { "min": 0, "max": 100, "label": "percent" } },
+        "metrics": [
+          [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${asg_name}", { "stat": "Average", "label": "Average" } ],
+          [ "...", { "stat": "Maximum", "label": "Hottest instance" } ]
+        ],
+        "annotations": {
+          "horizontal": [
+            { "label": "scaling target", "value": ${cpu_target_utilization}, "color": "#688ae8" },
+            { "label": "alarm threshold", "value": ${cpu_alarm_threshold}, "color": "#d13212" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8, "y": 8, "width": 8, "height": 6,
+      "properties": {
+        "title": "Memory and disk (CloudWatch agent)",
+        "view": "timeSeries",
+        "region": "${region}",
+        "period": 60,
+        "stat": "Average",
+        "yAxis": { "left": { "min": 0, "max": 100, "label": "percent" } },
+        "metrics": [
+          [ "${metrics_namespace}", "MemoryUtilization", "AutoScalingGroupName", "${asg_name}", { "label": "Memory used" } ],
+          [ ".", "DiskUtilization", ".", ".", { "label": "Root disk used" } ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16, "y": 8, "width": 8, "height": 6,
+      "properties": {
+        "title": "Auto Scaling capacity",
+        "view": "timeSeries",
+        "region": "${region}",
+        "period": 60,
+        "stat": "Average",
+        "yAxis": { "left": { "min": 0, "label": "instances" } },
+        "metrics": [
+          [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${asg_name}", { "label": "Desired" } ],
+          [ ".", "GroupInServiceInstances", ".", ".", { "label": "In service", "color": "#2ca02c" } ],
+          [ ".", "GroupPendingInstances", ".", ".", { "label": "Pending" } ],
+          [ ".", "GroupTerminatingInstances", ".", ".", { "label": "Terminating" } ]
+        ]
+      }
+    },
+
+    {
+      "type": "metric",
+      "x": 0, "y": 14, "width": 8, "height": 6,
+      "properties": {
+        "title": "Data tier — DynamoDB",
+        "view": "timeSeries",
+        "region": "${region}",
+        "period": 60,
+        "stat": "Sum",
+        "yAxis": { "left": { "min": 0 } },
+        "metrics": [
+          [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${products_table_name}", { "label": "Read units" } ],
+          [ ".", "ThrottledRequests", ".", ".", { "label": "Throttled", "color": "#d13212" } ],
+          [ ".", "SuccessfulRequestLatency", ".", ".", "Operation", "Scan", { "stat": "Average", "label": "Scan latency (ms)", "yAxis": "right" } ]
+        ]
+      }
+    },
+    {
+      "type": "log",
+      "x": 8, "y": 14, "width": 16, "height": 6,
+      "properties": {
+        "title": "Application errors and warnings (last 3h)",
+        "region": "${region}",
+        "view": "table",
+        "query": "SOURCE '${app_log_group}' | fields @timestamp, instanceId, az, level, message, error\n| filter level in ['error', 'warn']\n| sort @timestamp desc\n| limit 50"
+      }
+    }
+  ]
+}

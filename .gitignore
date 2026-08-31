@@ -1,0 +1,43 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+tfplan.json
+crash.log
+crash.*.log
+.terraform.lock.hcl.bak
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Local variable files may contain personal data (alert email) - never commit
+*.auto.tfvars
+*.auto.tfvars.json
+secrets.tfvars
+
+# Node
+node_modules/
+npm-debug.log*
+.env
+.env.*
+
+# Go / Terratest
+tests/terratest/vendor/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local scratch
+.scratch/
+
+# Alert email is personal data and this repository is public.
+.alert-email
