@@ -228,6 +228,7 @@ resource "aws_vpc_endpoint" "dynamodb" {
 # ---------------------------------------------------------------------------
 
 resource "aws_security_group" "alb" {
+  #checkov:skip=CKV2_AWS_5:false positive - attached to the load balancer in the compute module, across a module boundary
   name        = "${var.name_prefix}-alb-sg"
   description = "Public entry point. Accepts HTTP from the internet and forwards to the application tier."
   vpc_id      = aws_vpc.this.id
@@ -245,6 +246,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  #checkov:skip=CKV_AWS_260:this is a public storefront; port 80 terminates at the load balancer, never at an instance
   for_each = toset(var.alb_ingress_cidrs)
 
   security_group_id = aws_security_group.alb.id
@@ -275,6 +277,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_app" {
 }
 
 resource "aws_security_group" "app" {
+  #checkov:skip=CKV2_AWS_5:false positive - attached to the launch template in the compute module
   name        = "${var.name_prefix}-app-sg"
   description = "Application tier. Accepts traffic only from the load balancer; no direct internet ingress."
   vpc_id      = aws_vpc.this.id
@@ -328,6 +331,8 @@ resource "aws_vpc_security_group_egress_rule" "app_https" {
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "flow_logs" {
+  #checkov:skip=CKV_AWS_158:as with the application log group, a customer managed key is not justified at this data sensitivity
+  #checkov:skip=CKV_AWS_338:flow log retention is a cost lever, not a compliance obligation, for this workload
   name              = "/aws/vpc/${var.name_prefix}/flow-logs"
   retention_in_days = var.flow_log_retention_days
 

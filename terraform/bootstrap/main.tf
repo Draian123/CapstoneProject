@@ -30,6 +30,10 @@ locals {
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "state" {
+  #checkov:skip=CKV_AWS_145:SSE-S3 AES256 is configured below; a CMK adds a second way to lose access to all state
+  #checkov:skip=CKV_AWS_18:access logging needs a second bucket which then needs its own; bucket access is in CloudTrail
+  #checkov:skip=CKV_AWS_144:cross-region replication is moot for single-region state - if the region is gone, so is what it describes
+  #checkov:skip=CKV2_AWS_62:no consumer exists for state object write events
   bucket = local.state_bucket_name
 
   # State is the one thing we genuinely cannot rebuild. Refuse to destroy it

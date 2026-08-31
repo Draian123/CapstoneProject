@@ -14,6 +14,8 @@
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "gha_deploy" {
+  #checkov:skip=CKV_AWS_111:write actions cannot be resource-scoped for resources Terraform has not created yet; bounded by aws:RequestedRegion and explicit denies
+  #checkov:skip=CKV_AWS_356:same - wildcards are bounded by the region condition and the deny statements, and IAM is name-scoped to the project prefix
   # -------------------------------------------------------------------------
   # Regional infrastructure services.
   #
@@ -216,6 +218,8 @@ data "aws_iam_policy_document" "gha_deploy" {
 }
 
 resource "aws_iam_policy" "gha_deploy" {
+  #checkov:skip=CKV_AWS_111:write actions cannot be resource-scoped for resources Terraform has not created yet; bounded by region condition and explicit denies
+  #checkov:skip=CKV_AWS_356:same - wildcards are bounded by aws:RequestedRegion and the deny statements; IAM is name-scoped
   name        = "${var.project_name}-gha-deploy"
   description = "Least-privilege deploy permissions for the GitHub Actions apply role: service-, region- and name-scoped."
   policy      = data.aws_iam_policy_document.gha_deploy.json

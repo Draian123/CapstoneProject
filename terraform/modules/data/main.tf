@@ -12,6 +12,7 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_dynamodb_table" "products" {
+  #checkov:skip=CKV_AWS_119:a customer managed key is ~USD 1/month to protect a public product catalog; AWS-owned key applies
   name = "${var.name_prefix}-products"
 
   # On-demand rather than provisioned. The environment is torn down between
@@ -87,6 +88,7 @@ resource "aws_dynamodb_table_item" "products" {
 # ---------------------------------------------------------------------------
 
 resource "aws_backup_vault" "this" {
+  #checkov:skip=CKV_AWS_166:recovery points hold public catalog data and are encrypted with an AWS-managed key
   count = var.enable_backup_plan ? 1 : 0
 
   name = "${var.name_prefix}-backup-vault"

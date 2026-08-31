@@ -60,5 +60,10 @@ output "app_log_group_name" {
 
 output "ami_id" {
   description = "Amazon Linux 2023 AMI the launch template was pinned to at apply time."
-  value       = data.aws_ssm_parameter.al2023_ami.value
+
+  # SSM parameter values are sensitive by default, since parameters commonly
+  # hold secrets. This one is a public AWS-published AMI ID, so unwrapping it
+  # is safe and lets the ID show up in plan output and terraform output where
+  # it is genuinely useful for confirming which image a fleet is running.
+  value = nonsensitive(data.aws_ssm_parameter.al2023_ami.value)
 }

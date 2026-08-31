@@ -45,6 +45,8 @@ locals {
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "app" {
+  #checkov:skip=CKV_AWS_158:a customer managed key is ~USD 1/month; log groups are already encrypted with an AWS-managed key
+  #checkov:skip=CKV_AWS_338:retention is a deliberate cost lever here - 7 days dev, 30 prod; see COSTS.md
   name              = local.app_log_group
   retention_in_days = var.log_retention_days
 
@@ -139,7 +141,17 @@ resource "aws_iam_instance_profile" "instance" {
 # Load balancer
 # ---------------------------------------------------------------------------
 
+# HTTPS is the one control this platform knowingly does not implement. An
+# ACM certificate requires a domain, and this project owns none, so the
+# listener below is plain HTTP. Four scanner findings trace back to that
+# single fact; SECURITY.md records it as the top residual risk together with
+# what closing it would take.
 resource "aws_lb" "this" {
+  #checkov:skip=CKV_AWS_2:no domain is owned, so no ACM certificate exists; largest known gap, see SECURITY.md
+  #checkov:skip=CKV2_AWS_20:same root cause as CKV_AWS_2 - there is no HTTPS listener to redirect to
+  #checkov:skip=CKV2_AWS_28:WAF is ~USD 5/month per web ACL plus per-request charges; risk accepted in SECURITY.md
+  #checkov:skip=CKV_AWS_91:request telemetry is covered by ALB metrics, app logs and VPC flow logs; access logs would need a second bucket
+  #checkov:skip=CKV_AWS_150:off in dev so scripts/down.sh can tear down between sessions; prod sets it true
   name               = "${var.name_prefix}-alb"
   load_balancer_type = "application"
   internal           = false
@@ -163,6 +175,7 @@ resource "aws_lb" "this" {
 }
 
 resource "aws_lb_target_group" "app" {
+  #checkov:skip=CKV_AWS_378:ALB-to-target traffic stays inside private subnets and never leaves the VPC
   name        = "${var.name_prefix}-tg"
   port        = var.app_port
   protocol    = "HTTP"
@@ -200,6 +213,8 @@ resource "aws_lb_target_group" "app" {
 }
 
 resource "aws_lb_listener" "http" {
+  #checkov:skip=CKV_AWS_2:no domain is owned, so no ACM certificate exists; top residual risk in SECURITY.md
+  #checkov:skip=CKV_AWS_103:a TLS policy can only be set on an HTTPS listener, which requires that certificate
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
@@ -340,7 +355,10 @@ resource "aws_autoscaling_group" "app" {
       auto_rollback          = true
     }
 
-    triggers = ["launch_template", "desired_capacity"]
+    # A launch template change always triggers a refresh implicitly, so
+    # listing it here is redundant. Capacity changes do not, and adding it
+    # means a scale-out also picks up any pending configuration.
+    triggers = ["desired_capacity"]
   }
 
   # Wait for instances to pass the ELB health check before apply returns.

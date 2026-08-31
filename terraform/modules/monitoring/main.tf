@@ -33,7 +33,16 @@ locals {
 # Notification channel
 # ---------------------------------------------------------------------------
 
+# Deliberately not encrypted, and the reason is worth stating: enabling SSE
+# with the AWS-managed key (alias/aws/sns) would silently break alarm
+# delivery, because the CloudWatch service principal cannot use an
+# AWS-managed key. Every notification would fail to publish while the scanner
+# reported green. Doing it properly needs a customer managed key with a key
+# policy for cloudwatch.amazonaws.com and budgets.amazonaws.com, at about
+# USD 1/month, to protect alarm state transitions that carry no sensitive
+# data. A silent outage in the alerting path is the worse trade.
 resource "aws_sns_topic" "alerts" {
+  #checkov:skip=CKV_AWS_26:SSE with the AWS-managed key would silently break alarm delivery; see SECURITY.md
   name         = "${var.name_prefix}-alerts"
   display_name = "${var.name_prefix} alerts"
 
