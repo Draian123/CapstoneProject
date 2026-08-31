@@ -22,7 +22,7 @@ desired_capacity       = 3
 cpu_target_utilization = 50
 
 # Data tier
-enable_point_in_time_recovery = true
+enable_point_in_time_recovery = false
 enable_backup_plan            = true
 backup_retention_days         = 7
 enable_deletion_protection    = false
