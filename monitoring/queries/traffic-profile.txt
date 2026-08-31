@@ -1,0 +1,18 @@
+# Request volume and error rate over time, in five-minute buckets.
+# 
+# Answers the question that decides how an incident is handled: is load the
+# cause, or the symptom?
+# 
+# Errors rising with traffic points at capacity, and the scaling policy or
+# max_size is the place to look. Errors rising while traffic is flat points at
+# something breaking on its own -- a dependency, a bad deployment, a failing
+# instance.
+fields @timestamp, status, durationMs
+| filter message = "request"
+| stats
+    count(*)                                as requests,
+    sum(status >= 500)                      as server_errors,
+    sum(status >= 400 and status < 500)     as client_errors,
+    pct(durationMs, 95)                     as p95_ms
+  by bin(5m)
+| sort @timestamp asc

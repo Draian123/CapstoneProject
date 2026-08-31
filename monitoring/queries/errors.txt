@@ -1,0 +1,10 @@
+# Errors and warnings, most recent first.
+# 
+# The first query to run for any incident. Shows what failed, on which
+# instance, and in which availability zone -- so a fault isolated to one
+# instance or one AZ is visible immediately rather than after three more
+# queries.
+fields @timestamp, level, instanceId, az, message, error
+| filter level in ["error", "warn"]
+| sort @timestamp desc
+| limit 100

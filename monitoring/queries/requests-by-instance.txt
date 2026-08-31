@@ -1,0 +1,19 @@
+# Request distribution across instances and availability zones.
+# 
+# Two things to look for.
+# 
+# Even distribution across instances is the load balancer working. One
+# instance taking far more or far less than its share means it is either
+# unhealthy and out of rotation, or the others are.
+# 
+# Both AZs present is the multi-AZ claim holding up in practice rather than
+# only in configuration. Traffic collapsing into a single AZ means the other
+# one has no healthy targets.
+fields @timestamp, instanceId, az
+| filter message = "request"
+| stats
+    count(*)                  as requests,
+    avg(durationMs)           as avg_ms,
+    count_distinct(path)      as distinct_paths
+  by instanceId, az
+| sort requests desc

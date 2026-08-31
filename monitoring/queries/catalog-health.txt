@@ -1,0 +1,14 @@
+# The DynamoDB data path, for when the storefront shows an empty catalog.
+# 
+# Nothing alarms on this by design: the application keeps serving its last
+# known catalog and stays healthy when DynamoDB is unreachable, because a
+# health check that fails on a shared dependency empties the entire target
+# group at once. That makes this query the way the condition is found.
+# 
+# "catalog refresh failed" with an AccessDenied error points at the instance
+# role; a timeout points at the VPC gateway endpoint or its route table
+# association.
+fields @timestamp, level, instanceId, az, message, productCount, error
+| filter message like /catalog/
+| sort @timestamp desc
+| limit 100

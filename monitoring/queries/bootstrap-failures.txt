@@ -1,0 +1,14 @@
+# Instance bootstrap, for when instances launch but never become healthy.
+# 
+# The bootstrap script writes to a separate log stream per instance, so this
+# shows how far each instance got before it stopped. The last line before the
+# silence is the failing step.
+# 
+# The usual causes, in rough order of likelihood: the package install could not
+# reach the repositories through the NAT Gateway; the embedded application
+# failed `node --check`; or the service started but never answered its own
+# health probe within 60 seconds.
+fields @timestamp, @logStream, @message
+| filter @logStream like /bootstrap/
+| sort @timestamp desc
+| limit 200

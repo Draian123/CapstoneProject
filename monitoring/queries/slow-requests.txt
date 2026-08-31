@@ -1,0 +1,19 @@
+# Latency distribution per path, for when the p95 alarm fires.
+# 
+# Reports the tail rather than the average: a fleet where one request in
+# twenty is slow has a barely-moved average and a p95 through the roof, which
+# is exactly the situation the alarm is designed to catch.
+# 
+# If p99 is far above p95 the problem is a small number of pathological
+# requests; if p50 has moved too, the whole fleet is struggling.
+fields @timestamp, path, durationMs, instanceId, az, status
+| filter ispresent(durationMs)
+| stats
+    count(*)                as requests,
+    avg(durationMs)         as avg_ms,
+    pct(durationMs, 50)     as p50_ms,
+    pct(durationMs, 95)     as p95_ms,
+    pct(durationMs, 99)     as p99_ms,
+    max(durationMs)         as slowest_ms
+  by path
+| sort p95_ms desc

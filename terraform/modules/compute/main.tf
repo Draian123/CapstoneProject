@@ -190,12 +190,32 @@ resource "aws_lb_target_group" "app" {
     enabled = true
     path    = var.health_check_path
 
-    # Two consecutive passes to enter service, three failures to leave it:
-    # quick to recover, slow to flap.
-    interval            = 15
-    timeout             = 5
+    # These values were measured, not guessed. See the incident report.
+    #
+    # A hard instance failure -- the hypervisor going away, rather than a
+    # graceful scale-in -- is invisible to the load balancer until health
+    # checks notice. Until they do, it keeps routing to a dead target and
+    # returning 502. Detection time is therefore the error budget:
+    #
+    #   interval x unhealthy_threshold = worst-case seconds of 502s
+    #
+    # 15s x 3 = 45s window, measured at 6 failed requests.
+    #  5s x 2 = 10s window.
+    #
+    # 5s is the lowest interval an ALB accepts and 2 the lowest threshold, so
+    # this is the floor. Health checks cost nothing; 502s cost users. The
+    # timeout must stay below the interval, hence 3s -- generous for an
+    # endpoint that answers in under a millisecond.
+    #
+    # Note what this does NOT change: graceful operations were already
+    # error-free, because deregistration drains connections first. This only
+    # narrows the window for ungraceful failure, which cannot reach zero.
+    #
+    # See docs/incident-reports/2026-08-31-failover-502-window.md.
+    interval            = 5
+    timeout             = 3
     healthy_threshold   = 2
-    unhealthy_threshold = 3
+    unhealthy_threshold = 2
     matcher             = "200"
     protocol            = "HTTP"
   }
