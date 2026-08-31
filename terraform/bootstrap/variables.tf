@@ -57,6 +57,32 @@ variable "monthly_budget_usd" {
   }
 }
 
+variable "github_owner_id" {
+  description = <<-EOT
+    Numeric GitHub account ID of github_owner.
+
+    GitHub now issues OIDC subject claims that embed the numeric owner and
+    repository IDs alongside their names, so the trust policy has to match on
+    them. The IDs are immutable, which is the entire point: a claim naming only
+    "Draian123/CapstoneProject" could be satisfied by deleting the repository
+    and having someone else recreate it under the same name.
+
+    Find it with: curl -s https://api.github.com/repos/OWNER/REPO | jq .owner.id
+  EOT
+  type        = number
+  default     = 49660212
+}
+
+variable "github_repository_id" {
+  description = <<-EOT
+    Numeric GitHub repository ID of github_repo. See github_owner_id.
+
+    Find it with: curl -s https://api.github.com/repos/OWNER/REPO | jq .id
+  EOT
+  type        = number
+  default     = 1352118641
+}
+
 variable "owner" {
   description = "Cost allocation tag: who owns this workload."
   type        = string

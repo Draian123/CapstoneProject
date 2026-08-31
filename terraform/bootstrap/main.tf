@@ -21,8 +21,33 @@ locals {
   state_bucket_name = "${var.project_name}-tfstate-${data.aws_caller_identity.current.account_id}"
 
   # OIDC subject claims. Plan runs from pull requests, apply only from main.
-  sub_pull_request = "repo:${var.github_owner}/${var.github_repo}:pull_request"
-  sub_main_branch  = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
+  #
+  # Two formats are listed for each, and that is not belt-and-braces -- it is
+  # required. GitHub has moved to subject claims that embed the numeric owner
+  # and repository IDs:
+  #
+  #   classic  repo:Draian123/CapstoneProject:pull_request
+  #   current  repo:Draian123@49660212/CapstoneProject@1352118641:pull_request
+  #
+  # A trust policy matching only the classic form fails with
+  # "Not authorized to perform sts:AssumeRoleWithWebIdentity", which gives no
+  # hint that the subject is the problem. The ID-qualified form is the more
+  # secure one -- IDs are immutable, so a claim cannot be satisfied by deleting
+  # a repository and recreating it under the same name -- and the classic form
+  # is kept so this still works in accounts or repositories that have not
+  # migrated.
+  repo_named = "${var.github_owner}/${var.github_repo}"
+  repo_ided  = "${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repository_id}"
+
+  subs_pull_request = [
+    "repo:${local.repo_named}:pull_request",
+    "repo:${local.repo_ided}:pull_request",
+  ]
+
+  subs_main_branch = [
+    "repo:${local.repo_named}:ref:refs/heads/main",
+    "repo:${local.repo_ided}:ref:refs/heads/main",
+  ]
 }
 
 # ---------------------------------------------------------------------------
@@ -166,7 +191,7 @@ data "aws_iam_policy_document" "gha_plan_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.sub_pull_request, local.sub_main_branch]
+      values   = concat(local.subs_pull_request, local.subs_main_branch)
     }
   }
 }
@@ -193,7 +218,7 @@ data "aws_iam_policy_document" "gha_apply_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.sub_main_branch]
+      values   = local.subs_main_branch
     }
   }
 }
