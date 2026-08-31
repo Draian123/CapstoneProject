@@ -93,21 +93,26 @@ jobs:
         if: steps.guard.outputs.deployed == 'true'
         id: plan
         run: |
+          # Into the environment directory -- the issue-reporting step below
+          # reads it from there, and a bare redirect would write to the
+          # workspace root instead.
+          env_dir="terraform/environments/${{ matrix.environment }}"
+
           set +e
-          terraform -chdir=terraform/environments/${{ matrix.environment }} plan \
+          terraform -chdir="$env_dir" plan \
             -input=false -lock-timeout=5m -no-color -detailed-exitcode \
-            > drift.txt 2>&1
+            > "$env_dir/drift.txt" 2>&1
           code=$?
           set -e
 
           case $code in
             0) echo "drift=false" >> "$GITHUB_OUTPUT"; echo "No drift." ;;
-            2) echo "drift=true"  >> "$GITHUB_OUTPUT"; echo "Drift detected."; cat drift.txt ;;
-            *) cat drift.txt; echo "::error::plan failed"; exit 1 ;;
+            2) echo "drift=true"  >> "$GITHUB_OUTPUT"; echo "Drift detected."; cat "$env_dir/drift.txt" ;;
+            *) cat "$env_dir/drift.txt"; echo "::error::plan failed"; exit 1 ;;
           esac
 
           # Keep the issue body inside GitHub's 65536-character limit.
-          tail -c 40000 drift.txt > drift_trimmed.txt
+          tail -c 40000 "$env_dir/drift.txt" > "$env_dir/drift_trimmed.txt"
 
       - name: open or update a drift issue
         if: steps.plan.outputs.drift == 'true'
