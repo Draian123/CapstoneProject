@@ -20,9 +20,40 @@ locals {
   # reproducible in any account without hand-picking a name.
   state_bucket_name = "${var.project_name}-tfstate-${data.aws_caller_identity.current.account_id}"
 
-  # OIDC subject claims. Plan runs from pull requests, apply only from main.
-  sub_pull_request = "repo:${var.github_owner}/${var.github_repo}:pull_request"
-  sub_main_branch  = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
+  # OIDC subject claims.
+  #
+  # Two things here are easy to get wrong and both cost a working pipeline.
+  #
+  # First, GitHub issues subjects in an immutable form -- owner and repository
+  # *IDs* rather than their names -- so a policy trusting only the readable
+  # form is never matched. Both forms are trusted: the readable one because it
+  # is what a person reviewing this expects to see, the immutable one because
+  # it is what actually arrives in the token.
+  #
+  # Second, a job that declares `environment:` gets a subject naming the
+  # environment INSTEAD of the ref; GitHub does not put both in the claim. The
+  # apply workflow binds to an environment so a required reviewer can be
+  # configured without editing the workflow, so its token reads
+  # `...:environment:dev` and can never match a `ref:refs/heads/main` subject.
+  #
+  # Consequence worth stating plainly: once environment subjects are trusted,
+  # the branch is no longer in the claim, so IAM is not what confines apply to
+  # main any more. That moves to the environment's deployment-branch policy in
+  # GitHub, which must be set to `main` only. The two halves are one control --
+  # see RUNBOOK.md.
+  repo_subjects = [
+    "${var.github_owner}/${var.github_repo}",
+    "${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}",
+  ]
+
+  sub_pull_request = [for r in local.repo_subjects : "repo:${r}:pull_request"]
+  sub_main_branch  = [for r in local.repo_subjects : "repo:${r}:ref:refs/heads/main"]
+
+  sub_environments = flatten([
+    for r in local.repo_subjects : [
+      for env in var.deploy_environments : "repo:${r}:environment:${env}"
+    ]
+  ])
 }
 
 # ---------------------------------------------------------------------------
@@ -166,7 +197,7 @@ data "aws_iam_policy_document" "gha_plan_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.sub_pull_request, local.sub_main_branch]
+      values   = concat(local.sub_pull_request, local.sub_main_branch)
     }
   }
 }
@@ -187,13 +218,16 @@ data "aws_iam_policy_document" "gha_apply_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Apply is only ever reachable from the protected main branch. A pull
-    # request, including one from a fork, cannot mint a token matching this
-    # subject claim.
+    # Both shapes are accepted: the plain main-branch subject for an apply job
+    # that does not bind to an environment, and the environment subjects for
+    # the ones that do. A pull request cannot mint either, since its subject
+    # ends in `:pull_request`, and a fork cannot reach a repository environment
+    # at all. Which branch may deploy to those environments is the
+    # deployment-branch policy's job, not this policy's.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.sub_main_branch]
+      values   = concat(local.sub_main_branch, local.sub_environments)
     }
   }
 }

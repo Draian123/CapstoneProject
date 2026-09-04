@@ -22,6 +22,42 @@ variable "github_repo" {
   default     = "CapstoneProject"
 }
 
+variable "github_owner_id" {
+  description = <<-EOT
+    Numeric GitHub account ID of the owner. GitHub's OIDC subject claim uses
+    owner and repository IDs rather than their names, so this is required to
+    match a real token -- names alone never match.
+
+    Find it with: curl -s https://api.github.com/users/<owner> | jq .id
+  EOT
+  type        = number
+  default     = 49660212
+}
+
+variable "github_repo_id" {
+  description = <<-EOT
+    Numeric GitHub repository ID. See github_owner_id.
+
+    Find it with: curl -s https://api.github.com/repos/<owner>/<repo> | jq .id
+  EOT
+  type        = number
+  default     = 1352118641
+}
+
+variable "deploy_environments" {
+  description = <<-EOT
+    Environments the apply workflow may deploy to. Each is trusted as an OIDC
+    subject on the apply role, because a job bound to a GitHub Environment
+    presents `repo:owner/repo:environment:<name>` instead of a branch ref.
+
+    Adding a name here lets any branch that environment's deployment-branch
+    policy permits assume the apply role, so that policy in GitHub is the other
+    half of this control.
+  EOT
+  type        = list(string)
+  default     = ["dev", "prod"]
+}
+
 variable "alert_email" {
   description = <<-EOT
     Address subscribed to the shared alert topic.

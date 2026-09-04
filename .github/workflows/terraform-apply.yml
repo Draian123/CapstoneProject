@@ -83,8 +83,13 @@ jobs:
           key: tf-plugins-${{ runner.os }}-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
           restore-keys: tf-plugins-${{ runner.os }}-
 
-      # The apply role's trust policy accepts only tokens whose subject is
-      # refs/heads/main, so this cannot be reached from a pull request.
+      # This job binds to a GitHub Environment, so its OIDC token carries the
+      # subject repo:OWNER/REPO:environment:<name> -- the ref is not in the
+      # claim at all. IAM therefore cannot be what confines apply to main; the
+      # environment's deployment-branch policy is, and it is set to main only.
+      # The apply role trusts those environment subjects plus refs/heads/main.
+      # A pull request still cannot reach either: its subject ends
+      # :pull_request, and a fork cannot use a repository environment.
       - name: configure aws credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
