@@ -38,7 +38,11 @@ env:
 
 jobs:
   validate:
-    name: format, lint and validate
+    # No comma in this name, deliberately. Required-status-check lists are
+    # comma-separated in several GitHub UIs, so a job called "format, lint and
+    # validate" gets split into two checks that will never report, and the
+    # branch becomes permanently unmergeable with no obvious cause.
+    name: validate
     runs-on: ubuntu-latest
 
     steps:
@@ -201,40 +205,51 @@ jobs:
             -backend-config="key=${PROJECT_NAME}/${{ matrix.environment }}/terraform.tfstate" \
             -backend-config="region=${AWS_REGION}"
 
-      # Runs in the environment directory rather than using -chdir. -chdir
-      # changes Terraform's working directory but not the shell's, so a
-      # redirect like `> plan.txt` writes to the repository root while every
-      # step that reads the file looks for it under terraform/environments/.
       - name: terraform plan
         id: plan
-        working-directory: terraform/environments/${{ matrix.environment }}
         run: |
+          # Every artifact is written explicitly into the environment directory.
+          # A bare "> plan.txt" would land in the workspace root instead, because
+          # -chdir changes Terraform's directory, not the shell's.
+          env_dir="terraform/environments/${{ matrix.environment }}"
+
           set +e
-          terraform plan \
+          terraform -chdir="$env_dir" plan \
             -input=false -lock-timeout=5m -no-color \
-            -out=tfplan -detailed-exitcode > plan.txt 2>&1
+            -out=tfplan -detailed-exitcode > "$env_dir/plan.txt" 2>&1
           code=$?
           set -e
 
           # -detailed-exitcode: 0 = no changes, 2 = changes present, 1 = error.
           if [ $code -eq 1 ]; then
-            cat plan.txt
+            cat "$env_dir/plan.txt"
             exit 1
           fi
 
           echo "has_changes=$([ $code -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          tail -c 60000 plan.txt > plan_trimmed.txt
-          terraform show -json tfplan > tfplan.json
+          tail -c 60000 "$env_dir/plan.txt" > "$env_dir/plan_trimmed.txt"
+          terraform -chdir="$env_dir" show -json tfplan > "$env_dir/tfplan.json"
 
       # The gate that makes the policies real. Evaluated against the plan JSON,
       # so it sees resolved variables, expanded modules and merged default_tags
       # -- the actual intent, not the source text.
       - name: policy gate
         run: |
+          env_dir="terraform/environments/${{ matrix.environment }}"
+
+          # Fail loudly if the plan JSON is missing. Without this check, opa
+          # exits 2 on a missing input and the step failure is indistinguishable
+          # from a genuine policy rejection -- which is exactly how the path bug
+          # this guard exists to catch went unnoticed.
+          if [ ! -s "$env_dir/tfplan.json" ]; then
+            echo "::error::$env_dir/tfplan.json is missing or empty. The plan step did not produce it; this is a pipeline fault, not a policy violation."
+            exit 1
+          fi
+
           violations=$(opa eval \
             --format raw \
             --data terraform/policy/ \
-            --input terraform/environments/${{ matrix.environment }}/tfplan.json \
+            --input "$env_dir/tfplan.json" \
             'data.main.deny')
 
           count=$(echo "$violations" | jq 'length')
@@ -252,7 +267,6 @@ jobs:
 
           echo "No policy violations."
           echo "Policy gate passed for **${{ matrix.environment }}**." >> "$GITHUB_STEP_SUMMARY"
-        working-directory: ${{ github.workspace }}
 
       - name: comment plan on pull request
         if: github.event_name == 'pull_request'

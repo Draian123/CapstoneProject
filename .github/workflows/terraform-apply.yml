@@ -137,16 +137,17 @@ jobs:
             echo "**create_if_absent** enabled, or run \`scripts/up.sh ${TARGET_ENV}\` locally."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Runs in the environment directory rather than using -chdir, so that
-      # `> tfplan.json` writes where the policy gate below reads it. -chdir
-      # would move Terraform but not the shell doing the redirect.
       - name: terraform plan
         if: steps.guard.outputs.proceed == 'true'
-        working-directory: terraform/environments/${{ env.TARGET_ENV }}
         run: |
-          terraform plan -input=false -lock-timeout=5m -no-color -out=tfplan
+          # Written into the environment directory, not the workspace root --
+          # -chdir moves Terraform, not the shell that handles the redirect.
+          env_dir="terraform/environments/${TARGET_ENV}"
 
-          terraform show -json tfplan > tfplan.json
+          terraform -chdir="$env_dir" plan \
+            -input=false -lock-timeout=5m -no-color -out=tfplan
+
+          terraform -chdir="$env_dir" show -json tfplan > "$env_dir/tfplan.json"
 
       # The same gate the pull request had to pass. Re-run here because main
       # may have moved on since the PR was planned, and because a plan that was
@@ -154,8 +155,15 @@ jobs:
       - name: policy gate
         if: steps.guard.outputs.proceed == 'true'
         run: |
+          env_dir="terraform/environments/${TARGET_ENV}"
+
+          if [ ! -s "$env_dir/tfplan.json" ]; then
+            echo "::error::$env_dir/tfplan.json is missing or empty. This is a pipeline fault, not a policy violation."
+            exit 1
+          fi
+
           violations=$(opa eval --format raw --data terraform/policy/ \
-            --input terraform/environments/${TARGET_ENV}/tfplan.json 'data.main.deny')
+            --input "$env_dir/tfplan.json" 'data.main.deny')
 
           if [ "$(echo "$violations" | jq 'length')" -gt 0 ]; then
             echo "::error::Policy violations block this apply"
