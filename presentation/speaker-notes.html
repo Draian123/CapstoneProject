@@ -1,0 +1,186 @@
+<meta charset="utf-8">
+<title>ce-capstone — Speaker Notes</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e;
+    --accent:#58a6ff; --green:#7ee787; --amber:#e3b341; --red:#ff7b72;
+    --rule:#30363d;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  header {
+    display:flex; align-items:center; gap:1.5rem; flex-wrap:wrap;
+    padding:.85rem 1.6rem; border-bottom:1px solid var(--rule);
+    background:var(--panel);
+  }
+  .pos { font-size:1.05rem; font-weight:700; color:var(--accent);
+         font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .now { font-size:1.05rem; font-weight:600; flex:1 1 20rem; min-width:0;
+         overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .clocks { display:flex; gap:1.4rem; align-items:baseline; }
+  .clock { text-align:right; }
+  .clock .k { font-size:.62rem; letter-spacing:.09em; text-transform:uppercase;
+              color:var(--muted); }
+  .clock .v { font-size:1.5rem; font-weight:700; font-variant-numeric:tabular-nums;
+              line-height:1.1; }
+  .v.ok { color:var(--green); } .v.warn { color:var(--amber); } .v.over { color:var(--red); }
+  .bar { height:4px; background:var(--rule); }
+  .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+
+  main { flex:1; overflow-y:auto; padding:2.2rem 3rem 6rem; }
+  #wrap { max-width:60rem; margin:0 auto; }
+  h1 { font-size:2.15rem; line-height:1.2; margin:0 0 .4rem; color:var(--accent); }
+  .meta { color:var(--muted); font-size:.95rem; margin:0 0 2rem;
+          padding-bottom:1rem; border-bottom:1px solid var(--rule); }
+  p.note { font-size:1.6rem; line-height:1.55; margin:0 0 1.5rem; }
+  b { color:#fff; font-weight:700; }
+  i { color:var(--fg); }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+         font-size:.87em; background:var(--panel); color:var(--green);
+         padding:.12em .4em; border-radius:.3em; }
+  .cue { display:inline-block; background:rgba(227,179,65,.14); color:var(--amber);
+         border-left:3px solid var(--amber); padding:.15em .6em; border-radius:.2em;
+         font-weight:600; font-size:.92em; }
+  .next { margin-top:2.5rem; padding-top:1.2rem; border-top:1px solid var(--rule);
+          color:var(--muted); font-size:1.05rem; }
+  .next span { color:var(--fg); }
+
+  footer { position:fixed; bottom:0; left:0; right:0; display:flex; gap:.6rem;
+           flex-wrap:wrap; align-items:center; padding:.7rem 1.6rem;
+           background:var(--panel); border-top:1px solid var(--rule); }
+  button { font:inherit; font-size:.85rem; font-weight:600; cursor:pointer;
+           color:var(--fg); background:transparent; padding:.35rem .85rem;
+           border:1px solid var(--rule); border-radius:.35rem; }
+  button:hover { border-color:var(--muted); }
+  button.pri { background:var(--accent); border-color:var(--accent); color:#0d1117; }
+  .keys { margin-left:auto; color:var(--muted); font-size:.78rem; }
+  .keys kbd { font-family:inherit; background:var(--bg); border:1px solid var(--rule);
+              border-radius:.25rem; padding:.06em .4em; }
+
+  body.all main { padding-top:1.5rem; }
+  body.all .slide { margin-bottom:3.5rem; }
+  body.all p.note { font-size:1.12rem; margin-bottom:.85rem; }
+  body.all h1 { font-size:1.5rem; }
+  body.all .next { display:none; }
+  @media print {
+    header,footer,.bar { display:none; }
+    body,main { overflow:visible; height:auto; }
+    body { background:#fff; color:#000; }
+    h1 { color:#000; } p.note { font-size:1rem; }
+  }
+</style>
+
+<header>
+  <div class="pos" id="pos">1 / 12</div>
+  <div class="now" id="now"></div>
+  <div class="clocks">
+    <div class="clock"><div class="k">This slide</div><div class="v" id="cSlide">0:00</div></div>
+    <div class="clock"><div class="k">Target</div><div class="v" id="cTarget" style="color:var(--muted)">0:00</div></div>
+    <div class="clock"><div class="k">Elapsed</div><div class="v" id="cTotal">0:00</div></div>
+  </div>
+</header>
+<div class="bar"><div id="prog"></div></div>
+
+<main><div id="wrap"></div></main>
+
+<footer>
+  <button class="pri" id="bPlay">Start timer</button>
+  <button id="bPrev">&larr; Prev</button>
+  <button id="bNext">Next &rarr;</button>
+  <button id="bReset">Reset</button>
+  <button id="bAll">Show all notes</button>
+  <div class="keys">
+    <kbd>&larr;</kbd> <kbd>&rarr;</kbd> move &nbsp;·&nbsp; <kbd>space</kbd> next
+    &nbsp;·&nbsp; <kbd>t</kbd> timer &nbsp;·&nbsp; <kbd>a</kbd> all
+  </div>
+</footer>
+
+<script>
+const DECK = [{"n": 1, "title": "ce-capstone", "secs": 20, "mark": 20, "notes": ["Good morning. This is <b>ce-capstone</b> — a multi-AZ, load-balanced, monitored AWS platform, built entirely in Terraform.", "The subtitle is the interesting part, and it is not a joke. The single most important design constraint in this project was that the whole thing has to be <b>destroyable and rebuildable in about six minutes</b>.", "I will explain in a moment why that constraint ended up driving more architecture decisions than anything else."]}, {"n": 2, "title": "What I'll cover", "secs": 25, "mark": 45, "notes": ["Quick roadmap, six parts.", "I want to flag <b>part four</b> up front, because it is the part I would most want you to judge the project on. I made a resilience claim, measured it, found it was wrong, and had to correct it. That section is the honest centre of this talk.", "I will keep parts one through three brisk so there is room for it."]}, {"n": 3, "title": "The problem I actually had", "secs": 45, "mark": 90, "notes": ["The honest origin of this project is a cost problem, not an architecture problem.", "I wanted something production-shaped for my portfolio. But a NAT Gateway alone bills about <b>32 dollars a month</b> whether or not a single packet goes through it. Add a load balancer and three instances and you are at <b>71 dollars a month</b> for something nobody is using at three in the morning.", "I could have made it cheaper by making it less real — one AZ, no load balancer, a public instance. That defeats the point.", "So I inverted it. Instead of treating teardown as something you do at the end, I made <b>teardown and rebuild a first-class operation</b> the platform has to support well. That is the brief on screen.", "Watch how many later decisions fall out of it."]}, {"n": 4, "title": "What it is", "secs": 65, "mark": 155, "notes": ["Here is the shape. Public subnets across two availability zones hold only the load balancer. Private subnets hold three ARM instances in an Auto Scaling group. The catalog lives in DynamoDB.", "Two things worth pointing at.", "First, <b>the application is deliberately trivial</b> — a few hundred lines of Node with zero npm dependencies. That is on purpose. Every dependency is something that has to be downloaded through the NAT Gateway while an instance boots, and one more way for an instance to join the target group unhealthy. The infrastructure is the project; the app exists to make the infrastructure observable.", "Second, DynamoDB is reached through a <b>VPC gateway endpoint</b>, so catalog traffic never touches the NAT Gateway. That is a routing decision that is also a cost decision — gateway endpoints are free, NAT data processing is not.", "Four modules, 77 resources, about six minutes from nothing to serving traffic."]}, {"n": 5, "title": "Three tiers, isolated by three different mechanisms", "secs": 50, "mark": 205, "notes": ["I want to make one point about isolation here, because it is easy to say &#x27;three tiers&#x27; and mean nothing by it.", "Each tier is isolated by a <b>different mechanism</b>, chosen for that tier. The edge is isolated by a security group. The application tier is isolated by <b>routing</b> — there is no route from the internet to those subnets, so a security group misconfiguration there is not catastrophic. And the data tier is not in a subnet at all; it is isolated by <b>IAM</b>, scoped to five read-only actions on one table ARN.", "Two details I am proud of.", "The security groups reference <b>each other</b> rather than CIDR blocks. The app tier&#x27;s rule says &#x27;accept from the ALB&#x27;s security group&#x27;. That stays true if the ALB gets new addresses, which it does.", "And the load balancer&#x27;s <b>outbound</b> rules are restricted to the app tier. Most people only ever write ingress rules. If the ALB were compromised, it still could not reach anything else in the VPC."]}, {"n": 6, "title": "Live demo", "secs": 110, "mark": 315, "notes": ["<b><span class=\"cue\">Switch to the browser. Storefront already open.</span></b>", "This is the storefront. The cards at the top say which instance and which availability zone rendered this page.", "<b><span class=\"cue\">Press Start.</span></b>", "That button asks the API three times a second and tallies who answers. Watch the counters: requests climbing, <b>three instances</b>, <b>two zones</b>, zero failed. Those bars are the load balancer distributing traffic — roughly a third each. This is not a diagram of load balancing, it is load balancing.", "<b><span class=\"cue\">Leave it running. Switch to terminal, run scripts/demo-failover.sh dev.</span></b>", "Now I am terminating one of those instances outright — not a graceful scale-in, a hard kill.", "<b><span class=\"cue\">Back to the browser. Narrate as it happens.</span></b>", "Watch that bar stop growing... it greys out and says &#x27;no longer answering&#x27;... the failed counter ticks up — and there it is, a <b>new instance ID</b> appearing as the Auto Scaling group replaces it.", "Notice the failure count. It is small, but it is <b>not zero</b>. Hold on to that number, because the next section of this talk is entirely about it.", "<b><span class=\"cue\">If time is short: skip beat 4, go straight to the next slide.</span></b>"]}, {"n": 7, "title": "I claimed zero downtime. Then I measured it.", "secs": 40, "mark": 355, "notes": ["So. In my first draft of the README, I wrote that this platform delivers zero-downtime instance failure. It sounded right. Every component was configured correctly.", "Then I wrote a script that terminates an instance and probes the health endpoint once per second throughout, and I ran it.", "The Auto Scaling group did exactly what it was supposed to. And <b>six requests returned 502</b> while it happened.", "The reason is simple once you see it. A load balancer <b>cannot route away from a dead target until its health checks notice it is dead</b>. Until that moment it keeps confidently sending traffic to a machine that no longer exists.", "So the error window is not a mystery. It is arithmetic: the health check interval times the unhealthy threshold. Mine was 15 seconds times 3 — up to <b>45 seconds</b> of serving errors."]}, {"n": 8, "title": "Three measurements, not two", "secs": 65, "mark": 420, "notes": ["Here is where it gets interesting, and this is the slide I would most like a question about.", "I did not tune once. I measured <b>three times</b>.", "First row is where I started: 45-second theoretical window, six failed requests.", "Second row, I halved the window to 20 seconds. And the failures went from six to <b>five</b>. One request.", "That result is the most useful thing I learned in this project. If the window were a <b>prediction</b>, halving it should have roughly halved the failures. It did not — which told me the window is an <b>upper bound</b>, and the real failure count depends on where the request happens to land in the check cycle.", "Once I understood that, the decision changed. There is no clever middle number to find. You push to the floor the ALB allows — five seconds, threshold of two — and you take the two failed requests.", "Recovery time improved as a <b>side effect</b>, from 171 to 99 seconds, because detection gates replacement.", "And then I had to correct the claim itself. Zero-downtime <b>deployment</b> is true — connection draining handles that. Zero-downtime <b>instance failure</b> is not, and cannot be. The load balancer has to find out.", "The second version is less impressive. It is also the one that survives being asked &#x27;how do you know?&#x27;"]}, {"n": 9, "title": "Guardrails: automation that knows what 'normal' is", "secs": 55, "mark": 475, "notes": ["Briefly on the pipeline, because two decisions here are non-obvious.", "The policies are evaluated against the <b>plan JSON</b>, not the Terraform source. That matters: the plan has variables resolved, modules expanded, default tags merged. A policy that reads source code can be defeated by someone passing a variable. One that reads the plan cannot.", "And I unit-test the policies. Twenty-six tests. A rule that silently stopped matching would otherwise wave every plan through and nobody would notice.", "The two guards at the bottom are there because the <b>default behaviour was wrong for this platform specifically</b>.", "Normally you want a merge to main to deploy. Here, if the environment is torn down, deploying it would silently undo my entire cost control. So apply updates a running environment, and only an explicit manual dispatch may create one from nothing.", "Same logic for drift detection. For this platform, &#x27;zero resources&#x27; is the <b>resting state</b>. Without a check for that, it would open a false drift issue every single morning — and an issue tracker full of false alarms is one nobody reads."]}, {"n": 10, "title": "Security posture", "secs": 45, "mark": 520, "notes": ["Security, quickly — the theme is <b>removing capabilities rather than guarding them</b>.", "There are no AWS access keys anywhere in this repository. CI authenticates with OIDC, exchanging a GitHub-signed token for temporary credentials. EC2 uses an instance profile.", "There is no SSH. No key pair, no port 22, no bastion host. Access is Session Manager only. You cannot misconfigure a door that does not exist.", "And IMDSv2 is required with a hop limit of one, which closes the server-side request forgery path that turns an application bug into stolen instance credentials.", "The bottom half is the part I would actually like to discuss. Checkov flagged that my SNS topic is unencrypted. I did not fix it — and it is documented why.", "Encrypting it with the AWS-managed key would have made the scanner green, and <b>silently broken alarm delivery</b>, because CloudWatch cannot publish through that key. I would have traded a real alerting path for a green checkmark.", "A control that breaks the thing it is protecting is not a control."]}, {"n": 11, "title": "Results", "secs": 60, "mark": 580, "notes": ["Two sets of results.", "Cost on the left. Built the obvious way — two NAT Gateways, always on — this is about <b>127 dollars a month</b>. As designed but left running, <b>71</b>. As actually used, with teardown between sessions, <b>13 dollars a month</b>. That is a <b>90 percent reduction</b>.", "The biggest lever by far was simply <b>not running it when nobody is using it</b> — that alone is 82 percent. Second was one shared NAT Gateway instead of one per zone, which is another 33 dollars.", "The number that genuinely surprised me: the NAT Gateway and the load balancer together cost <b>49 dollars</b>. The three instances doing the actual work cost <b>18</b>. The plumbing is nearly three times the workload. I would not have guessed that, and it changed where I spent my optimisation effort.", "On the right, verification. Nothing on this list is a claim about what the code should do — each one was run."]}, {"n": 12, "title": "What I would do differently", "secs": 45, "mark": 625, "notes": ["Four things I would do differently, and they are all process rather than architecture.", "<b>Measure before documenting.</b> I have already shown you the worst example. I wrote the claim, then tested it, then had to correct it.", "<b>Scanners on day one.</b> Retrofitting 33 justified suppressions at the end was tedious, and worse, they arrived too late to influence any decision.", "<b>Monitoring must not share the lifecycle of the thing it monitors.</b> I put the alert topic inside the environment. Every teardown killed the subscription, so every rebuild needed the alert channel re-armed by hand. It is now in a bootstrap layer that survives teardown.", "<b>And the last one is from this week.</b> The application ships embedded in EC2 user data, which AWS caps at 16 kilobytes. I added a feature and the deploy failed with a 400 from the EC2 API — pointing at a launch template, not at the file that had actually grown. I fixed the size, but the more useful fix was a Terraform <b>precondition</b> that now fails at plan time and names the file. A hard limit you cannot see is a hard limit you will hit during a demo.", "That is the project. Thank you — happy to take questions."]}];
+const TOTAL = 625;
+
+let i = 0, running = false, total = 0, slide = 0, tick = null;
+const $ = id => document.getElementById(id);
+const mmss = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+
+function renderOne() {
+  const d = DECK[i];
+  const nxt = DECK[i + 1];
+  $('wrap').innerHTML =
+    '<h1>' + d.title + '</h1>' +
+    '<p class="meta">Slide ' + d.n + ' of ' + DECK.length +
+      ' &nbsp;·&nbsp; target ' + mmss(d.secs) +
+      ' &nbsp;·&nbsp; cumulative ' + mmss(d.mark) + ' of ' + mmss(TOTAL) + '</p>' +
+    d.notes.map(n => '<p class="note">' + n + '</p>').join('') +
+    (nxt ? '<div class="next">Next: <span>' + nxt.title + '</span></div>'
+         : '<div class="next">Last slide.</div>');
+  $('pos').textContent = d.n + ' / ' + DECK.length;
+  $('now').textContent = d.title;
+  $('cTarget').textContent = mmss(d.secs);
+  $('prog').style.width = ((i + 1) / DECK.length * 100) + '%';
+  document.querySelector('main').scrollTop = 0;
+}
+
+function renderAll() {
+  $('wrap').innerHTML = DECK.map(d =>
+    '<div class="slide"><h1>' + d.n + '. ' + d.title + '</h1>' +
+    '<p class="meta">target ' + mmss(d.secs) + ' &nbsp;·&nbsp; cumulative ' +
+      mmss(d.mark) + '</p>' +
+    d.notes.map(n => '<p class="note">' + n + '</p>').join('') + '</div>').join('');
+}
+
+function draw() { document.body.classList.contains('all') ? renderAll() : renderOne(); }
+
+function go(n) {
+  const next = Math.max(0, Math.min(DECK.length - 1, n));
+  if (next !== i) { i = next; slide = 0; }
+  draw();
+}
+
+// The slide clock turns amber at the target and red 30s past it, so overrunning
+// is visible in peripheral vision without doing arithmetic mid-sentence.
+function clocks() {
+  $('cTotal').textContent = mmss(total);
+  $('cSlide').textContent = mmss(slide);
+  const t = DECK[i].secs;
+  const el = $('cSlide');
+  el.className = 'v ' + (slide > t + 30 ? 'over' : slide > t ? 'warn' : 'ok');
+}
+
+function play(on) {
+  running = on === undefined ? !running : on;
+  $('bPlay').textContent = running ? 'Pause timer' : 'Start timer';
+  clearInterval(tick);
+  if (running) tick = setInterval(() => { total++; slide++; clocks(); }, 1000);
+}
+
+$('bNext').onclick = () => go(i + 1);
+$('bPrev').onclick = () => go(i - 1);
+$('bPlay').onclick = () => play();
+$('bReset').onclick = () => { total = slide = 0; play(false); clocks(); go(0); };
+$('bAll').onclick = () => {
+  document.body.classList.toggle('all');
+  $('bAll').textContent = document.body.classList.contains('all')
+    ? 'Presenter view' : 'Show all notes';
+  draw();
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+    e.preventDefault(); go(i + 1);
+  } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+    e.preventDefault(); go(i - 1);
+  } else if (e.key === 't') { play(); }
+  else if (e.key === 'a') { $('bAll').click(); }
+  else if (e.key === 'Home') { go(0); }
+  else if (e.key === 'End') { go(DECK.length - 1); }
+});
+
+draw();
+clocks();
+</script>
