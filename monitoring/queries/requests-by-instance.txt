@@ -9,6 +9,11 @@
 # Both AZs present is the multi-AZ claim holding up in practice rather than
 # only in configuration. Traffic collapsing into a single AZ means the other
 # one has no healthy targets.
+# 
+# The storefront's live view shows the same distribution from the browser,
+# without a CloudWatch console. This query is the version that still works
+# after the fact, when the tab has been closed and the question is what the
+# traffic looked like an hour ago.
 fields @timestamp, instanceId, az
 | filter message = "request"
 | stats
