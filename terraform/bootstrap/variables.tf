@@ -22,6 +22,20 @@ variable "github_repo" {
   default     = "CapstoneProject"
 }
 
+variable "deploy_environments" {
+  description = <<-EOT
+    Environments the apply workflow may deploy to. Each is trusted as an OIDC
+    subject on the apply role, because a job bound to a GitHub Environment
+    presents `repo:owner/repo:environment:<name>` instead of a branch ref.
+
+    Adding a name here lets any branch that environment's deployment-branch
+    policy permits assume the apply role, so that policy in GitHub is the other
+    half of this control.
+  EOT
+  type        = list(string)
+  default     = ["dev", "prod"]
+}
+
 variable "alert_email" {
   description = <<-EOT
     Address subscribed to the shared alert topic.

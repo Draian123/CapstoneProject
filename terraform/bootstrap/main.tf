@@ -48,6 +48,23 @@ locals {
     "repo:${local.repo_named}:ref:refs/heads/main",
     "repo:${local.repo_ided}:ref:refs/heads/main",
   ]
+
+  # A job that declares `environment:` gets a subject naming the environment
+  # INSTEAD of the ref -- GitHub does not put both in the claim. The apply
+  # workflow binds to an environment so a required reviewer can be configured
+  # without editing the workflow, so its token reads `...:environment:dev` and
+  # can never match a subs_main_branch entry. Every apply run failed at the
+  # credentials step with AccessDenied until these were trusted.
+  #
+  # Consequence worth stating plainly: with environment subjects trusted, the
+  # branch is no longer in the claim, so IAM is not what confines apply to
+  # main. That moves to the deployment-branch policy on each environment in
+  # GitHub, set to `main` only. The two halves are one control.
+  subs_environments = flatten([
+    for repo in [local.repo_named, local.repo_ided] : [
+      for env in var.deploy_environments : "repo:${repo}:environment:${env}"
+    ]
+  ])
 }
 
 # ---------------------------------------------------------------------------
@@ -212,13 +229,16 @@ data "aws_iam_policy_document" "gha_apply_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Apply is only ever reachable from the protected main branch. A pull
-    # request, including one from a fork, cannot mint a token matching this
-    # subject claim.
+    # Both shapes are accepted: the plain main-branch subject for an apply job
+    # that does not bind to an environment, and the environment subjects for
+    # the ones that do. A pull request cannot mint either -- its subject ends
+    # `:pull_request` -- and a fork cannot reach a repository environment at
+    # all. Which branch may deploy to an environment is the deployment-branch
+    # policy's job, not this policy's.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = local.subs_main_branch
+      values   = concat(local.subs_main_branch, local.subs_environments)
     }
   }
 }
