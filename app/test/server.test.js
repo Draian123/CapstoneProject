@@ -104,6 +104,58 @@ test('GET / sends security headers', async () => {
   assert.ok(response.headers.get('content-security-policy'));
 });
 
+test('GET / serves the load balancer live view', async () => {
+  const response = await fetch(BASE_URL);
+  const html = await response.text();
+
+  assert.match(html, /Load balancer live view/);
+  // The controls and the elements the script writes into. If an id is renamed
+  // on one side only, the panel silently does nothing in the browser and no
+  // server-side test would otherwise notice.
+  // Short ids on purpose: the whole app ships gzipped inside a 16384-byte user
+  // data blob, and every byte of this page is charged against that budget.
+  for (const id of ['go', 'rs', 'bars', 'note', 'mt', 'mi', 'mz', 'me']) {
+    assert.match(html, new RegExp(`id="${id}"`), `${id} is missing from the page`);
+  }
+});
+
+test('the live view script carries the nonce the policy names', async () => {
+  // The failure this guards against is silent: a mismatch here means the
+  // browser refuses the script, the panel never starts, and the server logs
+  // nothing at all because it did its job.
+  const response = await fetch(BASE_URL);
+  const html = await response.text();
+
+  const policy = response.headers.get('content-security-policy');
+  const fromPolicy = policy.match(/'nonce-([^']+)'/);
+  assert.ok(fromPolicy, `no nonce in the policy: ${policy}`);
+
+  const fromScript = html.match(/<script nonce="([^"]+)">/);
+  assert.ok(fromScript, 'the page has no nonced script tag');
+
+  assert.equal(fromScript[1], fromPolicy[1]);
+
+  // The script needs to reach /api/instance, and must not be able to reach
+  // anywhere else.
+  assert.match(policy, /connect-src 'self'/);
+  assert.match(policy, /default-src 'none'/);
+  assert.doesNotMatch(policy, /script-src[^;]*'unsafe-inline'/);
+});
+
+test('each response mints a fresh nonce', async () => {
+  // A nonce reused across responses is one an attacker can learn and then
+  // reuse, which defeats the point of having one.
+  const nonces = new Set();
+
+  for (let i = 0; i < 3; i += 1) {
+    const response = await fetch(BASE_URL);
+    await response.text();
+    nonces.add(response.headers.get('content-security-policy').match(/'nonce-([^']+)'/)[1]);
+  }
+
+  assert.equal(nonces.size, 3);
+});
+
 test('every response identifies which instance served it', async () => {
   for (const p of ['/', '/health', '/api/products', '/api/instance']) {
     const response = await fetch(`${BASE_URL}${p}`);
