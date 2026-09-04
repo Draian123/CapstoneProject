@@ -32,6 +32,7 @@ concurrency:
 env:
   TF_VERSION: "1.15.8"
   TFLINT_VERSION: "v0.64.0"
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
   AWS_REGION: us-east-1
   PROJECT_NAME: ce-capstone
 
@@ -48,6 +49,19 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      # Terraform downloads every provider from scratch in every job otherwise:
+      # once per module in validate, and once per environment in the plan
+      # matrix. Keyed on the lock files, so a provider upgrade invalidates it
+      # and nothing else does.
+      - name: cache terraform providers
+        run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+
       # Formatting is checked before anything else: it is the cheapest failure
       # and the one most likely to make a diff unreadable in review.
       - name: terraform fmt
@@ -56,6 +70,13 @@ jobs:
       - uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: ${{ env.TFLINT_VERSION }}
+
+      # `tflint --init` fetches the ruleset plugins from GitHub on every run,
+      # which is both slow and a dependency on GitHub's release CDN being up.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-${{ runner.os }}-${{ env.TFLINT_VERSION }}-${{ hashFiles('.tflint.hcl') }}
 
       - name: tflint
         run: |
@@ -141,6 +162,19 @@ jobs:
         with:
           version: latest
 
+      # Terraform downloads every provider from scratch in every job otherwise:
+      # once per module in validate, and once per environment in the plan
+      # matrix. Keyed on the lock files, so a provider upgrade invalidates it
+      # and nothing else does.
+      - name: cache terraform providers
+        run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+
       # Short-lived credentials from the read-only plan role. Its trust policy
       # only accepts tokens whose subject is a pull request or main on this
       # repository, so a fork cannot assume it.
@@ -167,11 +201,16 @@ jobs:
             -backend-config="key=${PROJECT_NAME}/${{ matrix.environment }}/terraform.tfstate" \
             -backend-config="region=${AWS_REGION}"
 
+      # Runs in the environment directory rather than using -chdir. -chdir
+      # changes Terraform's working directory but not the shell's, so a
+      # redirect like `> plan.txt` writes to the repository root while every
+      # step that reads the file looks for it under terraform/environments/.
       - name: terraform plan
         id: plan
+        working-directory: terraform/environments/${{ matrix.environment }}
         run: |
           set +e
-          terraform -chdir=terraform/environments/${{ matrix.environment }} plan \
+          terraform plan \
             -input=false -lock-timeout=5m -no-color \
             -out=tfplan -detailed-exitcode > plan.txt 2>&1
           code=$?
@@ -185,7 +224,7 @@ jobs:
 
           echo "has_changes=$([ $code -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           tail -c 60000 plan.txt > plan_trimmed.txt
-          terraform -chdir=terraform/environments/${{ matrix.environment }} show -json tfplan > tfplan.json
+          terraform show -json tfplan > tfplan.json
 
       # The gate that makes the policies real. Evaluated against the plan JSON,
       # so it sees resolved variables, expanded modules and merged default_tags

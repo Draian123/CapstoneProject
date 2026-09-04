@@ -47,6 +47,7 @@ env:
   AWS_REGION: us-east-1
   PROJECT_NAME: ce-capstone
   TARGET_ENV: ${{ inputs.environment || 'dev' }}
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
 
 jobs:
   apply:
@@ -68,6 +69,19 @@ jobs:
       - uses: open-policy-agent/setup-opa@v2
         with:
           version: latest
+
+      # Terraform downloads every provider from scratch in every job otherwise:
+      # once per module in validate, and once per environment in the plan
+      # matrix. Keyed on the lock files, so a provider upgrade invalidates it
+      # and nothing else does.
+      - name: cache terraform providers
+        run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
 
       # The apply role's trust policy accepts only tokens whose subject is
       # refs/heads/main, so this cannot be reached from a pull request.
@@ -123,13 +137,16 @@ jobs:
             echo "**create_if_absent** enabled, or run \`scripts/up.sh ${TARGET_ENV}\` locally."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Runs in the environment directory rather than using -chdir, so that
+      # `> tfplan.json` writes where the policy gate below reads it. -chdir
+      # would move Terraform but not the shell doing the redirect.
       - name: terraform plan
         if: steps.guard.outputs.proceed == 'true'
+        working-directory: terraform/environments/${{ env.TARGET_ENV }}
         run: |
-          terraform -chdir=terraform/environments/${TARGET_ENV} plan \
-            -input=false -lock-timeout=5m -no-color -out=tfplan
+          terraform plan -input=false -lock-timeout=5m -no-color -out=tfplan
 
-          terraform -chdir=terraform/environments/${TARGET_ENV} show -json tfplan > tfplan.json
+          terraform show -json tfplan > tfplan.json
 
       # The same gate the pull request had to pass. Re-run here because main
       # may have moved on since the PR was planned, and because a plan that was

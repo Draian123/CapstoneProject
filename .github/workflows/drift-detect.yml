@@ -31,6 +31,7 @@ env:
   TF_VERSION: "1.15.8"
   AWS_REGION: us-east-1
   PROJECT_NAME: ce-capstone
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
 
 jobs:
   detect:
@@ -49,6 +50,19 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
+
+      # Terraform downloads every provider from scratch in every job otherwise:
+      # once per module in validate, and once per environment in the plan
+      # matrix. Keyed on the lock files, so a provider upgrade invalidates it
+      # and nothing else does.
+      - name: cache terraform providers
+        run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
 
       # The read-only role. Drift detection must never be able to change
       # anything, so it deliberately cannot assume the apply role.
@@ -89,12 +103,16 @@ jobs:
             echo "${{ matrix.environment }} has ${count} resources; checking for drift."
           fi
 
+      # Runs in the environment directory rather than using -chdir, so that
+      # drift.txt lands where the issue-filing step below reads it. -chdir
+      # moves Terraform but not the shell doing the redirect.
       - name: terraform plan
         if: steps.guard.outputs.deployed == 'true'
         id: plan
+        working-directory: terraform/environments/${{ matrix.environment }}
         run: |
           set +e
-          terraform -chdir=terraform/environments/${{ matrix.environment }} plan \
+          terraform plan \
             -input=false -lock-timeout=5m -no-color -detailed-exitcode \
             > drift.txt 2>&1
           code=$?
