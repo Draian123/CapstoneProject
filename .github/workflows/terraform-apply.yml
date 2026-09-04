@@ -47,6 +47,7 @@ env:
   AWS_REGION: us-east-1
   PROJECT_NAME: ce-capstone
   TARGET_ENV: ${{ inputs.environment || 'dev' }}
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
 
 jobs:
   apply:
@@ -68,6 +69,19 @@ jobs:
       - uses: open-policy-agent/setup-opa@v2
         with:
           version: latest
+
+      # Terraform downloads every provider from scratch in every job otherwise:
+      # once per module in validate, and once per environment in the plan
+      # matrix. Keyed on the lock files, so a provider upgrade invalidates it
+      # and nothing else does.
+      - name: cache terraform providers
+        run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
 
       # The apply role's trust policy accepts only tokens whose subject is
       # refs/heads/main, so this cannot be reached from a pull request.

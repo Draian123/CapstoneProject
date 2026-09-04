@@ -23,8 +23,30 @@ data "aws_ssm_parameter" "al2023_ami" {
 locals {
   app_log_group = "/aws/ec2/${var.name_prefix}/app"
 
+  # The application ships gzipped inside EC2 user data, which AWS caps at
+  # 16384 bytes. server.js is heavily commented because those comments are the
+  # design record for this project -- but an instance does not need them, and
+  # at this size they are the difference between a deploy and an
+  # InvalidUserData.Malformed error from the EC2 API. Stripping them here keeps
+  # the source documented and the payload small: 8.0 KB rather than 11.5 KB.
+  #
+  # The filter is line-based rather than a real JavaScript parser, which HCL
+  # could not express in any case. That is safe for this file specifically: a
+  # `//` inside a string literal is never the first thing on its line, and
+  # every continuation line of a block comment starts with `*`. The bootstrap
+  # script runs `node --check` on the result before starting the service, and
+  # the instance refresh rolls back on failure, so a strip that broke the file
+  # could not reach the fleet unnoticed.
+  app_source = join("\n", [
+    for line in split("\n", file(var.app_source_path)) : line
+    if trimspace(line) != "" &&
+    !startswith(trimspace(line), "//") &&
+    !startswith(trimspace(line), "/*") &&
+    !startswith(trimspace(line), "*")
+  ])
+
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
-    app_payload_b64    = base64gzip(file(var.app_source_path))
+    app_payload_b64    = base64gzip(local.app_source)
     app_port           = var.app_port
     aws_region         = data.aws_region.current.region
     products_table     = var.products_table_name
@@ -329,6 +351,21 @@ resource "aws_launch_template" "app" {
 
   lifecycle {
     create_before_destroy = true
+
+    # The 16384-byte user data cap is a hard AWS limit, and growing the
+    # application is the ordinary way to hit it. Without this check that
+    # arrives as an InvalidUserData.Malformed error part-way through an apply,
+    # naming a launch template rather than the file that actually grew. Here it
+    # arrives at plan time, before anything has changed, and says what to do.
+    precondition {
+      condition     = length(local.user_data) <= 16384
+      error_message = <<-EOT
+        The rendered user data is ${length(local.user_data)} bytes; EC2 allows 16384.
+        The application is embedded in it, so app/src/server.js has outgrown
+        the budget. Either shrink the application, or move it out of user data
+        and fetch it at boot -- see ARCHITECTURE.md for why it is embedded.
+      EOT
+    }
   }
 }
 

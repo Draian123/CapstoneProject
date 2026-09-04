@@ -7,7 +7,8 @@
  * infrastructure, not application features, so this exists to make the
  * infrastructure observable:
  *
- *   GET /              storefront page showing which instance and AZ served it
+ *   GET /              storefront page, with a live view that polls /api/instance
+ *                      and tallies which instance and AZ answered each request
  *   GET /health        ALB health check target
  *   GET /api/products  product catalog, read from DynamoDB
  *   GET /api/instance  instance identity as JSON
@@ -27,6 +28,7 @@
  */
 
 const http = require('node:http');
+const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const os = require('node:os');
 
@@ -211,7 +213,16 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
-function sendHtml(res, statusCode, html) {
+/**
+ * The storefront's only HTML response, and the only one that needs a script.
+ *
+ * `script-src` names a single-use nonce rather than allowing 'unsafe-inline',
+ * so the live view runs and nothing else does -- an injected script tag has no
+ * nonce and is refused. `connect-src 'self'` lets that script call
+ * /api/instance on this origin and nowhere else, which is what stops a
+ * compromised page from exfiltrating anything it reads.
+ */
+function sendHtml(res, statusCode, html, nonce) {
   res.writeHead(statusCode, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(html),
@@ -221,7 +232,14 @@ function sendHtml(res, statusCode, html) {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
-    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+    'Content-Security-Policy': [
+      "default-src 'none'",
+      "style-src 'unsafe-inline'",
+      `script-src 'nonce-${nonce}'`,
+      "connect-src 'self'",
+      "base-uri 'none'",
+      "form-action 'none'",
+    ].join('; '),
   });
   res.end(html);
 }
@@ -305,7 +323,28 @@ function handleStress(res, url) {
   });
 }
 
-function renderStorefront() {
+/**
+ * The storefront page.
+ *
+ * Server-rendered, with one progressive enhancement: the live view polls
+ * `/api/instance` from the browser and tallies which instance answered. That
+ * turns three claims the architecture makes into something an audience can
+ * watch happen rather than three bullet points on a slide -- the load
+ * balancer spreading requests, the fleet spanning availability zones, and the
+ * recovery window from docs/incident-reports/2026-08-31-failover-502-window.md
+ * appearing on screen when an instance is killed.
+ *
+ * The markup and the inline assets here are kept terse on purpose. The whole
+ * application ships gzipped into EC2 user data, which is capped at 16384
+ * bytes, and this page is the largest single thing in the file. See
+ * ARCHITECTURE.md.
+ *
+ * The `nonce` is minted per response. The page's Content-Security-Policy
+ * admits exactly this one script tag, so an injected `<script>` still cannot
+ * run -- which is why this takes a nonce instead of relaxing the policy to
+ * `script-src 'unsafe-inline'`.
+ */
+function renderStorefront(nonce) {
   const rows =
     state.products.length > 0
       ? state.products
@@ -335,14 +374,16 @@ function renderStorefront() {
            margin: 0; padding: 2rem 1.5rem; line-height: 1.5; }
     main { max-width: 52rem; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    h2 { font-size: 0.95rem; margin: 0 0 0.2rem; }
     .sub { opacity: 0.7; margin: 0 0 2rem; font-size: 0.95rem; }
     .cards { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
              margin-bottom: 2rem; }
     .card { border: 1px solid rgba(128,128,128,0.35); border-radius: 0.5rem; padding: 0.85rem 1rem; }
-    .card .label { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.65; }
-    .card .value { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums;
-                   word-break: break-all; margin-top: 0.15rem; }
+    .label { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.65; }
+    .value { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums;
+             word-break: break-all; margin-top: 0.15rem; }
     .ok { color: #15803d; }
+    .bad { color: #b91c1c; }
     table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
     th, td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid rgba(128,128,128,0.25); }
     th { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.65; }
@@ -350,13 +391,33 @@ function renderStorefront() {
     .empty { opacity: 0.6; font-style: italic; }
     footer { margin-top: 2rem; font-size: 0.8rem; opacity: 0.6; }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .panel { border: 1px solid rgba(128,128,128,0.35); border-radius: 0.5rem;
+             padding: 1rem 1.15rem 1.15rem; margin-bottom: 2rem; }
+    .hint { font-size: 0.85rem; opacity: 0.7; margin: 0 0 1rem; }
+    .btn { font: inherit; font-size: 0.875rem; font-weight: 600; cursor: pointer;
+           padding: 0.4rem 0.95rem; margin-right: 0.5rem; border-radius: 0.375rem;
+           border: 1px solid rgba(128,128,128,0.45); background: transparent; color: inherit; }
+    .btn.go { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .btn.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+    .panel .cards { margin: 1rem 0 0; }
+    .bars { display: grid; grid-template-columns: minmax(8rem, auto) 1fr minmax(5rem, auto);
+            gap: 0.55rem 0.8rem; align-items: center; margin-top: 1rem; }
+    .bn { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+    .bz { font-size: 0.7rem; opacity: 0.6; font-family: inherit; }
+    .bt { background: rgba(128,128,128,0.18); border-radius: 999px; height: 0.7rem; overflow: hidden; }
+    .bf { height: 100%; border-radius: 999px; width: 0; transition: width 0.18s linear; }
+    .bc { font-size: 0.8rem; font-variant-numeric: tabular-nums; text-align: right; opacity: 0.85; }
+    .stale { opacity: 0.35; }
+    .gone { display: block; font-size: 0.68rem; font-weight: 600; color: #b91c1c;
+            font-family: ui-sans-serif, system-ui, sans-serif; }
+    .note { font-size: 0.8rem; opacity: 0.7; margin: 1rem 0 0; min-height: 1.2em; }
   </style>
 </head>
 <body>
 <main>
   <h1>ce-capstone storefront</h1>
-  <p class="sub">Reload the page &mdash; the instance below changes as the load balancer
-     spreads requests across availability zones.</p>
+  <p class="sub">This page was rendered by the instance named below. The live view
+     underneath keeps asking, and shows you who answers.</p>
 
   <div class="cards">
     <div class="card"><div class="label">Served by</div><div class="value">${escapeHtml(state.instanceId)}</div></div>
@@ -366,6 +427,26 @@ function renderStorefront() {
     <div class="card"><div class="label">Environment</div><div class="value">${escapeHtml(ENVIRONMENT)}</div></div>
     <div class="card"><div class="label">Uptime</div><div class="value">${Math.round((Date.now() - STARTED_AT) / 1000)}s</div></div>
   </div>
+
+  <section class="panel">
+    <h2>Load balancer live view</h2>
+    <p class="hint">Calls <code>/api/instance</code> three times a second and tallies who
+       answered. Leave it running and kill an instance with
+       <code>scripts/demo-failover.sh dev</code> to watch the platform heal itself.</p>
+
+    <button id="go" class="btn go" type="button">Start</button>
+    <button id="rs" class="btn" type="button">Reset</button>
+
+    <div class="cards">
+      <div class="card"><div class="label">Requests</div><div class="value" id="mt">0</div></div>
+      <div class="card"><div class="label">Instances</div><div class="value" id="mi">0</div></div>
+      <div class="card"><div class="label">Zones</div><div class="value" id="mz">0</div></div>
+      <div class="card"><div class="label">Failed</div><div class="value" id="me">0</div></div>
+    </div>
+
+    <div class="bars" id="bars"></div>
+    <p class="note" id="note">Idle &mdash; press Start.</p>
+  </section>
 
   <table>
     <thead>
@@ -381,6 +462,134 @@ function renderStorefront() {
     <code>/api/instance</code> &middot; <code>/stress?seconds=30</code>
   </footer>
 </main>
+
+<script nonce="${nonce}">
+(function () {
+  'use strict';
+  var MS = 300, STALE = 6000;
+  var COLORS = ['#2563eb', '#16a34a', '#d97706', '#9333ea', '#0891b2', '#db2777'];
+  var $ = function (id) { return document.getElementById(id); };
+  var go = $('go'), bars = $('bars'), note = $('note');
+  var on = false, timer = null, busy = false, total = 0, fails = 0;
+  var seen = new Map(), rows = new Map();
+
+  // Instance ids and zone names come from the API, so they are written with
+  // textContent and never parsed as markup.
+  function row(id, e) {
+    var n = document.createElement('div');
+    n.className = 'bn';
+    n.textContent = id;
+    var z = document.createElement('span');
+    z.className = 'bz';
+    z.textContent = ' ' + e.az;
+    var g = document.createElement('span');
+    g.className = 'gone';
+    n.appendChild(z);
+    n.appendChild(g);
+
+    var t = document.createElement('div');
+    t.className = 'bt';
+    var f = document.createElement('div');
+    f.className = 'bf';
+    f.style.background = e.color;
+    t.appendChild(f);
+
+    var c = document.createElement('div');
+    c.className = 'bc';
+
+    bars.appendChild(n);
+    bars.appendChild(t);
+    bars.appendChild(c);
+    return { n: n, g: g, t: t, f: f, c: c };
+  }
+
+  function draw() {
+    var now = Date.now(), zones = {}, nz = 0, max = 1;
+    seen.forEach(function (e) {
+      if (!zones[e.az]) { zones[e.az] = 1; nz++; }
+      if (e.n > max) max = e.n;
+    });
+
+    seen.forEach(function (e, id) {
+      var r = rows.get(id) || rows.set(id, row(id, e)).get(id);
+      r.f.style.width = Math.round((e.n / max) * 100) + '%';
+      r.c.textContent = e.n + ' (' + Math.round((e.n / total) * 100) + '%)';
+      var stale = on && now - e.seen > STALE;
+      r.g.textContent = stale ? 'no longer answering' : '';
+      r.n.classList.toggle('stale', stale);
+      r.t.classList.toggle('stale', stale);
+      r.c.classList.toggle('stale', stale);
+    });
+
+    $('mt').textContent = total;
+    $('mi').textContent = seen.size;
+    $('mz').textContent = nz;
+    $('me').textContent = fails;
+    $('me').classList.toggle('bad', fails > 0);
+  }
+
+  function say(msg, bad) {
+    note.textContent = msg || (on ? 'Polling every ' + MS + 'ms.' : 'Stopped after ' + total + ' requests.');
+    note.classList.toggle('bad', Boolean(msg && bad));
+  }
+
+  // One request in flight at a time. Without that, a stalled request during a
+  // failover queues hundreds of retries behind it and the failure count ends
+  // up describing the browser rather than the platform.
+  function tick() {
+    if (!on || busy) return;
+    busy = true;
+    fetch('/api/instance', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        var id = d.instanceId || 'unknown', e = seen.get(id);
+        if (!e) {
+          e = { n: 0, az: d.availabilityZone || '-', color: COLORS[seen.size % COLORS.length], seen: 0 };
+          seen.set(id, e);
+        }
+        e.n++;
+        e.seen = Date.now();
+        total++;
+        say('');
+      })
+      // These are the requests worth watching: during an ungraceful failure the
+      // load balancer keeps sending traffic to a target it has not yet marked
+      // unhealthy, and this counts that window.
+      .catch(function (err) { total++; fails++; say('Request failed: ' + err.message, true); })
+      .then(function () { busy = false; draw(); });
+  }
+
+  go.addEventListener('click', function () {
+    on = !on;
+    go.textContent = on ? 'Stop' : 'Start';
+    go.classList.toggle('on', on);
+    go.classList.toggle('go', !on);
+    if (on) { timer = setInterval(tick, MS); tick(); }
+    else { clearInterval(timer); timer = null; }
+    say('');
+    draw();
+  });
+
+  $('rs').addEventListener('click', function () {
+    total = fails = 0;
+    seen.clear();
+    rows.clear();
+    bars.textContent = '';
+    say('');
+    draw();
+  });
+
+  // A forgotten tab should not sit generating requests and log volume all day.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden && on) go.click();
+  });
+
+  draw();
+})();
+</script>
 </body>
 </html>`;
 }
@@ -421,8 +630,12 @@ const server = http.createServer((req, res) => {
       return handleProducts(res);
     case '/stress':
       return handleStress(res, url);
-    case '/':
-      return sendHtml(res, 200, renderStorefront());
+    case '/': {
+      // 128 bits of randomness per response. A nonce that repeated across
+      // responses would be one an attacker could learn and reuse.
+      const nonce = crypto.randomBytes(16).toString('base64');
+      return sendHtml(res, 200, renderStorefront(nonce), nonce);
+    }
     default:
       return sendJson(res, 404, { error: 'not found', path: url.pathname });
   }
