@@ -4,18 +4,18 @@ name: drift detection
 #
 # Drift is what happens after someone fixes something in the console during an
 # incident and never brings it back to Terraform. The next apply then silently
-# reverts the fix, or fails. This job runs a read-only plan on a schedule and
+# reverts the fix, or fails. This job runs a read-only plan on demand and
 # opens an issue when reality and code disagree.
 #
 # It is careful about one thing in particular: this platform is deliberately
 # torn down between working sessions. An empty environment is the expected
-# state, not drift, so the job checks for that first and exits quietly. Without
-# that check it would file a false issue every single night.
+# state, not drift, so the job checks for that first and exits quietly, which
+# still matters on a manual run against a torn-down environment.
 
 on:
-  schedule:
-    # 06:00 UTC daily, before a working session rather than during one.
-    - cron: "0 6 * * *"
+  # The daily schedule is deliberately off. This platform is torn down between
+  # working sessions, so a nightly run had nothing to check and only produced
+  # notification noise. Run it by hand when an environment is actually up.
   workflow_dispatch:
 
 permissions:
